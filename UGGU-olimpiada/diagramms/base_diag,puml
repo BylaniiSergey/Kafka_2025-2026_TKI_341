@@ -1,0 +1,41 @@
+@startuml
+title "Базовый сценарий выполнения задания"
+
+actor "Оператор" as op
+
+participant "Диспетчерская" as disp
+participant "1.Связь" as con
+participant "3.Система управления" as brain
+participant "4.Навигация" as nav
+participant "2.Датчики" as sensors
+participant "5.Приводы движения" as servos
+participant "6.Приводы бура" as drill
+
+
+autonumber
+
+group Планирование и начало задания
+
+op -> disp: новое задание\nи ограничения 
+disp -> con: новое задание\nи ограничения 
+con -> brain: новое задание\nи ограничения 
+nav -> brain: текущие координаты
+sensors -> brain: измерения и\nналичие препятствий
+
+end
+
+loop Выполнение задания
+brain -> brain: расчёт управления
+alt в точке бурения тоннеля
+brain -> drill: бурить тоннель
+else если еще нет, продолжаем движение
+brain -> servos: управление
+servos -> servos: исполнение
+nav -> brain: текущие координаты
+sensors -> brain: измерения и\nналичие препятствий
+brain -> con: телеметрия
+con -> disp: телеметрия
+end
+end
+
+@enduml
