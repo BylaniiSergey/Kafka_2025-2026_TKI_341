@@ -18,11 +18,11 @@
 Ключевые ценности, ущербы, неприемлемые события:<br>    
 <img width="898" height="485" alt="image" src="https://github.com/user-attachments/assets/296a860f-8d17-4f03-a8d8-991e59490690" /><br>     
 Контекст:<br>       
-<img width="606" height="481" alt="image" src="https://github.com/user-attachments/assets/bcdd2b46-abd5-4450-bb25-16ba86703eab" /><br>
+<img width="586" height="509" alt="image" src="https://github.com/user-attachments/assets/1b80a17a-4520-4d6f-925d-d1a9765f9213" /><br>
 Основные функциональные сценарии:<br>
 <img width="941" height="1289" alt="image" src="https://github.com/user-attachments/assets/06badb48-0182-4b49-a51a-c93b47603fdf" /><br>
 Высокоуровневая архитектура:<br>
-<img width="2498" height="1413" alt="image" src="https://github.com/user-attachments/assets/79fc1848-c9ea-4e5b-be01-714e42893bbb" /><br>
+<img width="2498" height="1416" alt="image" src="https://github.com/user-attachments/assets/e83c7d80-0dca-4f4d-8916-102b4ba3335d" /><br>
 Описание подсистем:<br>  
 <img width="874" height="471" alt="image" src="https://github.com/user-attachments/assets/dc6f17e4-6a4b-4cb9-ae94-7ff68ace3b65" /><br>
 <img width="873" height="498" alt="image" src="https://github.com/user-attachments/assets/dd924f96-45d4-4853-b59c-7f179a0c843a" /><br>
