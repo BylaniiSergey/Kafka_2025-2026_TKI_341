@@ -26,6 +26,8 @@
 <img width="941" height="1289" alt="image" src="https://github.com/user-attachments/assets/06badb48-0182-4b49-a51a-c93b47603fdf" /><br>
 Высокоуровневая архитектура:<br>
 <img width="2498" height="1416" alt="image" src="https://github.com/user-attachments/assets/e83c7d80-0dca-4f4d-8916-102b4ba3335d" /><br>
+![photo_2026-03-08_15-46-52 (2)](https://github.com/user-attachments/assets/61887b28-6bbe-4ee5-9504-0803f1d9c953)
+<br>
 Описание подсистем:<br>  
 <img width="874" height="471" alt="image" src="https://github.com/user-attachments/assets/dc6f17e4-6a4b-4cb9-ae94-7ff68ace3b65" /><br>
 <img width="873" height="498" alt="image" src="https://github.com/user-attachments/assets/dd924f96-45d4-4853-b59c-7f179a0c843a" /><br>
