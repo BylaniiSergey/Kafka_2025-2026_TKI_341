@@ -42,5 +42,4 @@
 <img width="756" height="499" alt="image" src="https://github.com/user-attachments/assets/42778481-e0f3-4d76-bf73-13648aaf0d0e" /><br>
 Негативные сценарии:<br>
 <img width="538" height="662" alt="image" src="https://github.com/user-attachments/assets/ad9a6927-aa7e-48ac-881b-74a382ef4bf3" />
-<img width="515" height="713" alt="image" src="https://github.com/user-attachments/assets/7e5f1d70-951e-4c56-8b17-41f320ea6cce" />
 <img width="533" height="724" alt="image" src="https://github.com/user-attachments/assets/d20fc622-0120-4a47-9de7-a8f47e4e32f8" />
