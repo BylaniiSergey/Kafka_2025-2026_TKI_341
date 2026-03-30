@@ -41,6 +41,6 @@
 <img width="755" height="94" alt="image" src="https://github.com/user-attachments/assets/b5181f50-131f-4e94-b212-ecbbc6cfda11" /><br>
 <img width="756" height="499" alt="image" src="https://github.com/user-attachments/assets/42778481-e0f3-4d76-bf73-13648aaf0d0e" /><br>
 Негативные сценарии:<br>
-<img width="517" height="647" alt="image" src="https://github.com/user-attachments/assets/66a10eaf-4e1c-4d2a-b2a8-b6fcf3e77eb4" />
+<img width="538" height="662" alt="image" src="https://github.com/user-attachments/assets/ad9a6927-aa7e-48ac-881b-74a382ef4bf3" />
 <img width="515" height="713" alt="image" src="https://github.com/user-attachments/assets/7e5f1d70-951e-4c56-8b17-41f320ea6cce" />
-
+<img width="533" height="724" alt="image" src="https://github.com/user-attachments/assets/d20fc622-0120-4a47-9de7-a8f47e4e32f8" />
