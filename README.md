@@ -63,3 +63,21 @@
 | 13 | Подмена данных о заряде батареи | Контроллер заряда батареи передал ложные данные о высоком уровне заряда, экзоскелет отключился во время движения из-за разряда батареи. | ЦБ2, ЦБ5 |
 | 14 | Подмена данных о температуре | Система контроля температуры внутренней части передала ложные данные о нормальной температуре при фактическом перегреве, системы терморегуляции не активировались. | ЦБ5 |
 | 15 | Болезненная вибрация | Модуль отправки тактильных сигналов получил команду на максимальную интенсивность вибрации, причинив боль и дискомфорт пациенту. | ЦБ5, ЦБ6 |
+
+<img width="987" height="371" alt="image" src="https://github.com/user-attachments/assets/b3213419-f9ae-4f20-af8b-73e0dfc6fdc4" />
+
+<img width="623" height="298" alt="image" src="https://github.com/user-attachments/assets/14c04694-2a42-4fa1-b57a-e7e94e381624" />
+
+<img width="736" height="255" alt="image" src="https://github.com/user-attachments/assets/82d96f20-3b0c-408c-aba1-c580295d21bf" />
+
+<img width="902" height="255" alt="image" src="https://github.com/user-attachments/assets/6946c2df-7b70-407a-ae7c-d83c96f13595" />
+
+<img width="801" height="255" alt="image" src="https://github.com/user-attachments/assets/f8d203c2-9336-4cbb-bfd2-f67731674321" />
+
+<img width="632" height="355" alt="image" src="https://github.com/user-attachments/assets/79d5ef79-ac08-413f-a8a1-8df87a0d8b9f" />
+
+<img width="596" height="223" alt="image" src="https://github.com/user-attachments/assets/2bda5b92-10f2-40bb-a72d-7102b0d9c208" />
+
+<img width="780" height="298" alt="image" src="https://github.com/user-attachments/assets/824dc365-f6b7-4415-a4c1-bacd4cb18177" />
+
+<img width="731" height="223" alt="image" src="https://github.com/user-attachments/assets/24249ebc-2c78-4c5a-b89f-a8330968acc5" />
