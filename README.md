@@ -126,7 +126,7 @@ python -m exoskeleton.demo_kafka
 |:--|:--|
 | `exoskeleton.commands` | Команды от центра / планшета (JSON) |
 | `exoskeleton.telemetry` | Ответ + снимок состояния (`snapshot`) |
-| `exoskeleton.events` | События безопасности (например после `emergency_stop`) |
+| `exoskeleton.events` | События безопасности |
 
 **Мок (брокер не нужен):**
 
