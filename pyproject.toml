@@ -1,0 +1,18 @@
+[project]
+name = "exoskeleton-prototype"
+version = "0.1.0"
+description = "Прототип подсистем реабилитационного экзоскелета (учебный проект)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+kafka = ["kafka-python>=2.0.2"]
+
+[project.scripts]
+exoskeleton-demo = "exoskeleton.demo:main"
+exoskeleton-kafka-demo = "exoskeleton.demo_kafka:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["exoskeleton*"]
