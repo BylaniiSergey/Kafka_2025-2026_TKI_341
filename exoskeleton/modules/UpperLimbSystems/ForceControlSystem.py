@@ -31,16 +31,6 @@ class ForceReading(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-class GripForceLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    arm = db.Column(db.String(10))
-    grip_type = db.Column(db.String(20))
-    target_force = db.Column(db.Float)
-    applied_force = db.Column(db.Float)
-    object_detected = db.Column(db.Boolean)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
-
 SAFETY_THRESHOLDS = {
     'max_safe_force': 150.0,
     'emergency_threshold': 200.0
@@ -102,18 +92,9 @@ def apply_force():
         applied_force = SAFETY_THRESHOLDS['max_safe_force']
         state['current_force'] = applied_force
     
-    # Логирование
+    # Логирование показаний
     reading = ForceReading(arm=arm, force_value=applied_force)
     db.session.add(reading)
-    
-    log = GripForceLog(
-        arm=arm,
-        grip_type=grip_type,
-        target_force=target_force,
-        applied_force=applied_force,
-        object_detected=object_detected
-    )
-    db.session.add(log)
     db.session.commit()
     
     return jsonify({
@@ -202,21 +183,6 @@ def reset():
         force_state[arm]['current_force'] = 0.0
     
     return jsonify({'message': 'Force control system reset'})
-
-
-@app.route('/history', methods=['GET'])
-def get_history():
-    limit = request.args.get('limit', 100, type=int)
-    logs = GripForceLog.query.order_by(GripForceLog.timestamp.desc()).limit(limit).all()
-    return jsonify([{
-        'id': l.id,
-        'arm': l.arm,
-        'grip_type': l.grip_type,
-        'target_force': l.target_force,
-        'applied_force': l.applied_force,
-        'object_detected': l.object_detected,
-        'timestamp': l.timestamp.strftime('%Y-%m-%d %H:%M:%S')
-    } for l in logs])
 
 
 @app.route('/health', methods=['GET'])
