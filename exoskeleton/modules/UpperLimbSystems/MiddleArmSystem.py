@@ -1,71 +1,38 @@
 import os
 from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
 import threading
 from werkzeug.exceptions import HTTPException
-from datetime import datetime
 from enum import Enum
 
 HOST = '0.0.0.0'
 PORT = 8004
 MODULE_NAME = os.getenv('MODULE_NAME', 'middle_arm_system')
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///middle_arm.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
+ 
 
 class JointStatus(Enum):
     IDLE = "idle"
     MOVING = "moving"
     AT_LIMIT = "at_limit"
     ERROR = "error"
-    EMERGENCY_STOP = "emergency_stop"
 
 
 JOINTS_CONFIG = {
     'elbow_flexion': {'min_angle': 0, 'max_angle': 145, 'max_speed': 80},
-    'forearm_pronation': {'min_angle': -80, 'max_angle': 80, 'max_speed': 60},
-    'wrist_flexion': {'min_angle': -70, 'max_angle': 70, 'max_speed': 50},
-    'wrist_deviation': {'min_angle': -20, 'max_angle': 35, 'max_speed': 40}
+    'forearm_pronation': {'min_angle': -80, 'max_angle': 80, 'max_speed': 60}
 }
-
-
-class JointPosition(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    arm = db.Column(db.String(10))
-    joint_name = db.Column(db.String(50))
-    angle = db.Column(db.Float)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class MovementExecution(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    arm = db.Column(db.String(10))
-    intent = db.Column(db.String(50))
-    start_positions = db.Column(db.String(200))
-    end_positions = db.Column(db.String(200))
-    strength = db.Column(db.Float)
-    success = db.Column(db.Boolean)
-    executed_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 joint_states = {
     'left': {
         'status': JointStatus.IDLE,
-        'positions': {joint: 0.0 for joint in JOINTS_CONFIG},
-        'emergency_stop': False
+        'positions': {joint: 0.0 for joint in JOINTS_CONFIG}
     },
     'right': {
         'status': JointStatus.IDLE,
-        'positions': {joint: 0.0 for joint in JOINTS_CONFIG},
-        'emergency_stop': False
+        'positions': {joint: 0.0 for joint in JOINTS_CONFIG}
     }
 }
-
-
-with app.app_context():
-    db.create_all()
 
 
 @app.route('/move', methods=['POST'])
@@ -82,13 +49,9 @@ def move():
     if arm not in joint_states:
         return jsonify({'error': 'Invalid arm specified'}), 400
     
-    if joint_states[arm]['emergency_stop']:
-        return jsonify({'error': 'Emergency stop is active'}), 403
-    
     state = joint_states[arm]
     state['status'] = JointStatus.MOVING
     
-    start_positions = state['positions'].copy()
     target_changes = calculate_movement(intent, strength)
     
     new_positions = {}
@@ -102,22 +65,8 @@ def move():
             
             state['positions'][joint] = new_angle
             new_positions[joint] = new_angle
-            
-            pos_record = JointPosition(arm=arm, joint_name=joint, angle=new_angle)
-            db.session.add(pos_record)
     
     state['status'] = JointStatus.IDLE
-    
-    execution = MovementExecution(
-        arm=arm,
-        intent=intent,
-        start_positions=str(start_positions),
-        end_positions=str(new_positions),
-        strength=strength,
-        success=True
-    )
-    db.session.add(execution)
-    db.session.commit()
     
     return jsonify({
         'success': True,
@@ -138,11 +87,16 @@ def calculate_movement(intent, strength):
             'elbow_flexion': -base_movement
         },
         'extend_arm': {
-            'elbow_flexion': -base_movement * 0.5,
-            'wrist_flexion': base_movement * 0.2
+            'elbow_flexion': -base_movement * 0.5
         },
         'retract_arm': {
             'elbow_flexion': base_movement * 0.7
+        },
+        'pronate': {
+            'forearm_pronation': base_movement
+        },
+        'supinate': {
+            'forearm_pronation': -base_movement
         }
     }
     
@@ -154,13 +108,11 @@ def get_status():
     return jsonify({
         'left': {
             'status': joint_states['left']['status'].value,
-            'positions': joint_states['left']['positions'],
-            'emergency_stop': joint_states['left']['emergency_stop']
+            'positions': joint_states['left']['positions']
         },
         'right': {
             'status': joint_states['right']['status'].value,
-            'positions': joint_states['right']['positions'],
-            'emergency_stop': joint_states['right']['emergency_stop']
+            'positions': joint_states['right']['positions']
         }
     })
 
@@ -175,38 +127,6 @@ def get_positions(arm):
         'positions': joint_states[arm]['positions'],
         'status': joint_states[arm]['status'].value
     })
-
-
-@app.route('/emergency_stop', methods=['POST'])
-def emergency_stop():
-    for arm in joint_states:
-        joint_states[arm]['emergency_stop'] = True
-        joint_states[arm]['status'] = JointStatus.EMERGENCY_STOP
-    
-    return jsonify({'message': 'Middle arm emergency stop activated'})
-
-
-@app.route('/reset', methods=['POST'])
-def reset():
-    for arm in joint_states:
-        joint_states[arm]['emergency_stop'] = False
-        joint_states[arm]['status'] = JointStatus.IDLE
-    
-    return jsonify({'message': 'Middle arm system reset'})
-
-
-@app.route('/history', methods=['GET'])
-def get_history():
-    limit = request.args.get('limit', 50, type=int)
-    records = MovementExecution.query.order_by(MovementExecution.executed_at.desc()).limit(limit).all()
-    return jsonify([{
-        'id': r.id,
-        'arm': r.arm,
-        'intent': r.intent,
-        'strength': r.strength,
-        'success': r.success,
-        'executed_at': r.executed_at.strftime('%Y-%m-%d %H:%M:%S')
-    } for r in records])
 
 
 @app.route('/health', methods=['GET'])
