@@ -1,10 +1,8 @@
 import requests
 import os
 from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
 import threading
 from werkzeug.exceptions import HTTPException
-from datetime import datetime
 from enum import Enum
 import time
 
@@ -12,9 +10,6 @@ HOST = '0.0.0.0'
 PORT = 8002
 MODULE_NAME = os.getenv('MODULE_NAME', 'arm_movement_system')
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///arm_movement.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
 
 UPPER_ARM_URL = 'http://upper_arm_system:8003'
 MIDDLE_ARM_URL = 'http://middle_arm_system:8004'
@@ -42,19 +37,6 @@ class ArmStatus(Enum):
     EMERGENCY_STOP = "emergency_stop"
 
 
-class MovementRecord(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    arm = db.Column(db.String(20))
-    intent = db.Column(db.String(50))
-    strength = db.Column(db.Float)
-    speed_modifier = db.Column(db.Float)
-    sections_involved = db.Column(db.String(100))
-    success = db.Column(db.Boolean)
-    error_message = db.Column(db.String(200))
-    executed_at = db.Column(db.DateTime, default=datetime.utcnow)
-    duration_ms = db.Column(db.Integer)
-
-
 arm_state = {
     'left': {'status': ArmStatus.IDLE, 'position': {}},
     'right': {'status': ArmStatus.IDLE, 'position': {}},
@@ -62,15 +44,8 @@ arm_state = {
 }
 
 
-with app.app_context():
-    db.create_all()
-
-
 @app.route('/execute', methods=['POST'])
 def execute_movement():
-    if arm_state['emergency_stop']:
-        return jsonify({'error': 'Emergency stop is active'}), 403
-    
     data = request.json
     if not data:
         return jsonify({'error': 'No data provided'}), 400
@@ -87,15 +62,10 @@ def execute_movement():
         return jsonify({'error': f'Unknown intent: {intent}'}), 400
     
     sections = INTENT_MAPPING[intent]
-    start_time = time.time()
-    results = {}
-    errors = []
-    
     arms_to_move = ['left', 'right'] if arm == 'both' else [arm]
     
     for current_arm in arms_to_move:
         if current_arm not in arm_state:
-            errors.append(f'Invalid arm: {current_arm}')
             continue
             
         arm_state[current_arm]['status'] = ArmStatus.MOVING
@@ -110,65 +80,13 @@ def execute_movement():
             }
             
             try:
-                response = requests.post(f'{url}/move', json=command, timeout=REQUEST_TIMEOUT)
-                if response.status_code == 200:
-                    results[f'{current_arm}_{section}'] = response.json()
-                else:
-                    errors.append(f'{current_arm}_{section}: {response.json().get("error", "Unknown error")}')
-            except requests.RequestException as e:
-                errors.append(f'{current_arm}_{section}: {str(e)}')
+                requests.post(f'{url}/move', json=command, timeout=REQUEST_TIMEOUT)
+            except requests.RequestException:
+                pass
         
-        arm_state[current_arm]['status'] = ArmStatus.IDLE if not errors else ArmStatus.ERROR
+        arm_state[current_arm]['status'] = ArmStatus.IDLE
     
-    duration_ms = int((time.time() - start_time) * 1000)
-    
-    record = MovementRecord(
-        arm=arm,
-        intent=intent,
-        strength=strength,
-        speed_modifier=speed_modifier,
-        sections_involved=','.join(sections),
-        success=len(errors) == 0,
-        error_message='; '.join(errors) if errors else None,
-        duration_ms=duration_ms
-    )
-    db.session.add(record)
-    db.session.commit()
-    
-    if errors:
-        return jsonify({
-            'success': False,
-            'errors': errors,
-            'partial_results': results,
-            'duration_ms': duration_ms
-        }), 500
-    
-    return jsonify({
-        'success': True,
-        'results': results,
-        'duration_ms': duration_ms
-    })
-
-
-@app.route('/status', methods=['GET'])
-def get_status():
-    subsystem_status = {}
-    
-    for section, url in [('upper', UPPER_ARM_URL), ('middle', MIDDLE_ARM_URL), ('fingers', FINGERS_URL)]:
-        try:
-            response = requests.get(f'{url}/status', timeout=REQUEST_TIMEOUT)
-            subsystem_status[section] = response.json() if response.status_code == 200 else {'status': 'error'}
-        except:
-            subsystem_status[section] = {'status': 'offline'}
-    
-    return jsonify({
-        'arm_state': {
-            'left': arm_state['left']['status'].value,
-            'right': arm_state['right']['status'].value
-        },
-        'emergency_stop': arm_state['emergency_stop'],
-        'subsystems': subsystem_status
-    })
+    return '', 204  # No Content
 
 
 @app.route('/emergency_stop', methods=['POST'])
@@ -199,21 +117,6 @@ def reset():
             pass
     
     return jsonify({'message': 'System reset complete'})
-
-
-@app.route('/history', methods=['GET'])
-def get_history():
-    limit = request.args.get('limit', 100, type=int)
-    records = MovementRecord.query.order_by(MovementRecord.executed_at.desc()).limit(limit).all()
-    return jsonify([{
-        'id': r.id,
-        'arm': r.arm,
-        'intent': r.intent,
-        'strength': r.strength,
-        'success': r.success,
-        'duration_ms': r.duration_ms,
-        'executed_at': r.executed_at.strftime('%Y-%m-%d %H:%M:%S')
-    } for r in records])
 
 
 def get_section_url(section):
