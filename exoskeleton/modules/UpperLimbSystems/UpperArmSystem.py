@@ -38,17 +38,6 @@ class JointPosition(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-class MovementExecution(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    arm = db.Column(db.String(10))
-    intent = db.Column(db.String(50))
-    start_positions = db.Column(db.String(200))
-    end_positions = db.Column(db.String(200))
-    strength = db.Column(db.Float)
-    success = db.Column(db.Boolean)
-    executed_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
 joint_states = {
     'left': {
         'status': JointStatus.IDLE,
@@ -106,16 +95,6 @@ def move():
             db.session.add(pos_record)
     
     state['status'] = JointStatus.IDLE
-    
-    execution = MovementExecution(
-        arm=arm,
-        intent=intent,
-        start_positions=str(start_positions),
-        end_positions=str(new_positions),
-        strength=strength,
-        success=True
-    )
-    db.session.add(execution)
     db.session.commit()
     
     return jsonify({
@@ -195,20 +174,6 @@ def reset():
         joint_states[arm]['status'] = JointStatus.IDLE
     
     return jsonify({'message': 'Upper arm system reset'})
-
-
-@app.route('/history', methods=['GET'])
-def get_history():
-    limit = request.args.get('limit', 50, type=int)
-    records = MovementExecution.query.order_by(MovementExecution.executed_at.desc()).limit(limit).all()
-    return jsonify([{
-        'id': r.id,
-        'arm': r.arm,
-        'intent': r.intent,
-        'strength': r.strength,
-        'success': r.success,
-        'executed_at': r.executed_at.strftime('%Y-%m-%d %H:%M:%S')
-    } for r in records])
 
 
 @app.route('/health', methods=['GET'])
