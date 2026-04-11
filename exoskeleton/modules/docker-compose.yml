@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # 2.2.2 Battery Cell
+  battery_cell:
+    build: ./module_battery_cell
+    container_name: exo_battery_cell
+    ports:
+      - "8006:8000"
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # 2.2.1 Charger
+  charger:
+    build: ./module_charger
+    container_name: exo_charger
+    ports:
+      - "8005:8000"
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # 2.2 Battery Controller
+  battery_controller:
+    build: ./module_battery_controller
+    container_name: exo_battery_controller
+    ports:
+      - "8004:8000"
+    environment:
+      - CHARGER_URL=http://charger:8000
+      - BATTERY_CELL_URL=http://battery_cell:8000
+    networks:
+      - exo_network
+    depends_on:
+      - charger
+      - battery_cell
+    restart: unless-stopped
+
+  # 2.1 Sensors
+  sensors:
+    build: ./module_sensors
+    container_name: exo_sensors
+    ports:
+      - "8003:8000"
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # 2 Monitoring
+  monitoring:
+    build: ./module_monitoring
+    container_name: exo_monitoring
+    ports:
+      - "8002:8000"
+    environment:
+      - SENSORS_URL=http://sensors:8000
+      - BATTERY_CTRL_URL=http://battery_controller:8000
+      - COMMS_URL=http://comms:8000
+    networks:
+      - exo_network
+    depends_on:
+      - sensors
+      - battery_controller
+    restart: unless-stopped
+
+  # 1 Comms
+  comms:
+    build: ./module_comms
+    container_name: exo_comms
+    ports:
+      - "8001:8000"
+    environment:
+      - MONITORING_URL=http://monitoring:8000
+    networks:
+      - exo_network
+    depends_on:
+      - monitoring
+    restart: unless-stopped
+
+networks:
+  exo_network:
+    driver: bridge
