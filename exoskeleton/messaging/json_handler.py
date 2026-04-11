@@ -1,17 +1,22 @@
 """
 Разбор JSON-команд и вызов методов ExoskeletonControlSystem без изменения логики модулей.
 """
+
 from __future__ import annotations
+
 import json
 from typing import Any
+
 from exoskeleton.control_system import ExoskeletonControlSystem
 from exoskeleton.types_common import CommandSource
+
 
 def _source(raw: str) -> CommandSource:
     try:
         return CommandSource(raw)
     except ValueError as e:
         raise ValueError(f"invalid source: {raw!r}") from e
+
 
 class CommandJsonHandler:
     """Один вход: dict или JSON-строка; один выход: dict для ответа/телеметрии."""

@@ -1,14 +1,22 @@
 """
-Потребитель команд из Kafka и публикация телеметрии/событий.
+Потребитель команд из Kafka и публикация телеметрии/событий (опциональная зависимость).
+
+Пример (локальный Kafka):
+  pip install ".[kafka]"
+  python -m exoskeleton.messaging.kafka_runner --bootstrap localhost:9092
 """
+
 from __future__ import annotations
+
 import argparse
 import json
 import sys
 from typing import Any
+
 from exoskeleton.control_system import ExoskeletonControlSystem
 from exoskeleton.messaging.json_handler import CommandJsonHandler
 from exoskeleton.messaging.kafka_topics import TOPIC_COMMANDS, TOPIC_EVENTS, TOPIC_TELEMETRY
+
 
 def _run(bootstrap: str, group_id: str) -> None:
     try:
@@ -47,6 +55,7 @@ def _run(bootstrap: str, group_id: str) -> None:
         producer.flush()
         print(f"Обработано correlation_id={reply.get('correlation_id')}", flush=True)
 
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Kafka: команды → экзоскелет → телеметрия")
     p.add_argument(
@@ -61,6 +70,7 @@ def main() -> None:
     )
     args = p.parse_args()
     _run(args.bootstrap, args.group)
+
 
 if __name__ == "__main__":
     main()

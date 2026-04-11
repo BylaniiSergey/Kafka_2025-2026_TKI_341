@@ -94,13 +94,14 @@
 
 <img width="438" height="326" alt="image" src="https://github.com/user-attachments/assets/bc16d007-09bf-44a0-a3cd-17fbfd85df3b" />
 
+---
 
 ## Прототип на Python (реализация по высокоуровневой архитектуре)
 
 В репозитории добавлен учебный код: центральная **система управления** и шесть подсистем, согласованные с описанием выше.
 
 | Компонент | Файл |
-|:--|:--|
+|-----------|------|
 | Система управления экзоскелетом | `exoskeleton/control_system.py` |
 | Модуль остановки | `exoskeleton/modules/stop.py` |
 | Открытие/закрытие корпуса (коляски) | `exoskeleton/modules/carriage.py` |
@@ -108,22 +109,25 @@
 | Нагрев | `exoskeleton/modules/climate/heating.py` |
 | Охлаждение | `exoskeleton/modules/climate/cooling.py` |
 | Тактильные сигналы пациенту | `exoskeleton/modules/tactile.py` |
+| HTTP API (FastAPI) | `exoskeleton/api/app.py` |
 
-**Запуск демонстрации**:
+**Запуск демонстрации** (нужен Python 3.10+):
 
 ```bash
 cd Exoskeleton
 python main.py
-
-python -m exoskeleton.demo
-
-python -m exoskeleton.demo_kafka
 ```
+
+или `python -m exoskeleton.demo`.
+
+В консоли по шагам показываются сценарии: инициализация, сеанс, климат, аварийный стоп, корпус, сброс врачом, нештатная команда, подозрительные датчики температуры.
 
 ### Сценарий Kafka (топики + JSON)
 
+Логика модулей не меняется: поверх `ExoskeletonControlSystem` стоит обработчик JSON-команд (`exoskeleton/messaging/json_handler.py`).
+
 | Топик | Назначение |
-|:--|:--|
+|-------|------------|
 | `exoskeleton.commands` | Команды от центра / планшета (JSON) |
 | `exoskeleton.telemetry` | Ответ + снимок состояния (`snapshot`) |
 | `exoskeleton.events` | События безопасности (например после `emergency_stop`) |
@@ -134,8 +138,38 @@ python -m exoskeleton.demo_kafka
 python -m exoskeleton.demo_kafka
 ```
 
-**Живой Kafka:**
+**Живой Kafka** (после `pip install ".[kafka]"` или `pip install kafka-python`):
 
 ```bash
 python -m exoskeleton.messaging.kafka_runner --bootstrap localhost:9092
 ```
+
+Потребитель читает `exoskeleton.commands`, пишет ответы в `exoskeleton.telemetry` и при наличии поля `event` — в `exoskeleton.events`.
+
+Примеры поля `action` в JSON: `initialize`, `start_session`, `end_session`, `emergency_stop`, `monitoring_stop`, `reset_emergency`, `open_carriage`, `close_carriage`, `update_climate`, `tactile_contact`, `telemetry` / `snapshot`. У команд с источником нужен `source`: одно из `patient`, `doctor_tablet`, `rehab_center`, `operator`, `monitoring`. Опционально `correlation_id` для сквозной трассировки.
+
+### FastAPI и тесты
+
+Установка: `pip install ".[api,dev]"`.
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/health` | Проверка живости |
+| GET | `/telemetry` | Снимок состояния (`ExoskeletonControlSystem.snapshot`) |
+| POST | `/commands` | Тело запроса — тот же JSON, что для Kafka (`CommandJsonHandler`) |
+
+Запуск сервера: `python -m exoskeleton.api.run` или `exoskeleton-api` (после установки пакета). Документация OpenAPI: `http://127.0.0.1:8000/docs`.
+
+Тесты API: `pytest` из корня репозитория.
+
+### Docker
+
+Сборка и запуск только API:
+
+```bash
+docker compose up --build
+```
+
+Сервис слушает порт **8000** (`http://localhost:8000/docs`).
+
+Это **упрощённый прототип** для иллюстрации связей модулей и политик безопасности из документации, а не прошивка реального изделия.

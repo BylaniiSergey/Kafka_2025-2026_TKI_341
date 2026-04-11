@@ -1,4 +1,5 @@
 """Подсистемы экзоскелета (прототип)."""
+
 from exoskeleton.modules.carriage import CarriageSystem, CarriageState
 from exoskeleton.modules.climate.cooling import CoolingSystem
 from exoskeleton.modules.climate.heating import HeatingSystem

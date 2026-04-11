@@ -1,8 +1,11 @@
 """Модуль остановки: принудительная остановка и (опционально) открытие экзоскелета."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+
 
 class StopReason(str, Enum):
     PATIENT_ESTOP = "patient_emergency"
@@ -11,6 +14,7 @@ class StopReason(str, Enum):
     UNAUTHORIZED_COMMAND = "unauthorized_command"
     LOSS_OF_BALANCE = "loss_of_balance"
     MANUAL_RESET = "manual_reset"
+
 
 @dataclass
 class StopModule:

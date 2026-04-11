@@ -1,11 +1,20 @@
 """
-Сценарий с топиками Kafka и JSON.
+Сценарий с топиками Kafka и JSON (без изменения логики модулей).
+
+Без установленного kafka-python и без брокера: показывается тот же поток сообщений
+«как будто» они прошли через топики (мок).
+
+Реальный брокер: pip install ".[kafka]" и python -m exoskeleton.messaging.kafka_runner
 """
+
 from __future__ import annotations
+
 import json
+
 from exoskeleton.control_system import ExoskeletonControlSystem
 from exoskeleton.messaging import TOPIC_COMMANDS, TOPIC_EVENTS, TOPIC_TELEMETRY
 from exoskeleton.messaging.json_handler import CommandJsonHandler
+
 
 def _print(title: str) -> None:
     print()
@@ -13,8 +22,10 @@ def _print(title: str) -> None:
     print(title)
     print("=" * 60)
 
+
 def _as_json(obj: object) -> str:
     return json.dumps(obj, ensure_ascii=False, indent=2)
+
 
 def main() -> None:
     ctrl = ExoskeletonControlSystem()
@@ -77,6 +88,7 @@ def main() -> None:
     print("Готово. Для живого Kafka: pip install \".[kafka]\"")
     print("Затем: python -m exoskeleton.messaging.kafka_runner --bootstrap localhost:9092")
     print()
+
 
 if __name__ == "__main__":
     main()

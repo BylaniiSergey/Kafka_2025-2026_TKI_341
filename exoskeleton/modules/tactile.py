@@ -1,12 +1,16 @@
 """Модуль отправки тактильных сигналов пациенту (вибрация, импульсы)."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
+
 
 class TactilePattern(str, Enum):
     CONTACT_SOLE = "contact_sole"
     WARNING = "warning"
     CUSTOM = "custom"
+
 
 @dataclass
 class TactileModule:

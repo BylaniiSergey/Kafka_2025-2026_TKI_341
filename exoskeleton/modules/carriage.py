@@ -1,13 +1,17 @@
 """Система открытия и закрытия корпуса (коляски), где размещается пациент."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+
 
 class CarriageState(str, Enum):
     CLOSED = "closed"
     OPEN = "open"
     MOVING = "moving"
+
 
 @dataclass
 class CarriageSystem:

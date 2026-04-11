@@ -438,7 +438,10 @@ FodyWeavers.xsd
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudio,visualstudiocode,windows
 
-# Python: виртуальные окружения и сборка пакета 
+# ------------------------------------------------------------------------------
+# Python: виртуальные окружения и сборка пакета (прототип Exoskeleton)
+# (__pycache__ и *.pyc уже есть выше в секции PTVS)
+# ------------------------------------------------------------------------------
 .Python
 .venv/
 venv/

@@ -1,6 +1,9 @@
 """Центральная система управления экзоскелетом (узел «1» на схеме)."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
+
 from exoskeleton.modules.carriage import CarriageSystem
 from exoskeleton.modules.climate.cooling import CoolingSystem
 from exoskeleton.modules.climate.heating import HeatingSystem
@@ -8,6 +11,7 @@ from exoskeleton.modules.climate.temperature import ClimateMode, InternalTempera
 from exoskeleton.modules.stop import StopModule, StopReason
 from exoskeleton.modules.tactile import TactileModule, TactilePattern
 from exoskeleton.types_common import CommandSource, SystemState
+
 
 @dataclass
 class ExoskeletonControlSystem:

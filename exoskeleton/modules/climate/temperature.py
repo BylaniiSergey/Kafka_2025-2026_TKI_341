@@ -1,12 +1,16 @@
 """Контроль температуры внутренней части костюма (тело / воздух)."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
+
 
 class ClimateMode(str, Enum):
     IDLE = "idle"
     HEATING = "heating"
     COOLING = "cooling"
+
 
 @dataclass
 class InternalTemperatureControl:

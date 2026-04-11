@@ -2,15 +2,19 @@
 Демонстрация сценариев для преподавателя.
 Запуск: python -m exoskeleton.demo
 """
+
 from __future__ import annotations
+
 from exoskeleton.control_system import ExoskeletonControlSystem
 from exoskeleton.types_common import CommandSource
+
 
 def _print(title: str) -> None:
     print()
     print("=" * 60)
     print(title)
     print("=" * 60)
+
 
 def main() -> None:
     ctrl = ExoskeletonControlSystem()
@@ -66,6 +70,7 @@ def main() -> None:
     print()
     print("Готово. Модули: стоп, коляска/корпус, тактиль, температура, нагрев, охлаждение.")
     print()
+
 
 if __name__ == "__main__":
     main()

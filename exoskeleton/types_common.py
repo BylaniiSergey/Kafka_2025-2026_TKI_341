@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+
 class CommandSource(str, Enum):
     """Кто отдал команду (для трассировки и упрощённой проверки прав)."""
 
