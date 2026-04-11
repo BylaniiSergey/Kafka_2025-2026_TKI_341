@@ -143,6 +143,7 @@ python -m exoskeleton.demo_kafka
 ```bash
 python -m exoskeleton.messaging.kafka_runner --bootstrap localhost:9092
 ```
+<<<<<<< HEAD
 
 Потребитель читает `exoskeleton.commands`, пишет ответы в `exoskeleton.telemetry` и при наличии поля `event` — в `exoskeleton.events`.
 
@@ -173,3 +174,5 @@ docker compose up --build
 Сервис слушает порт **8000** (`http://localhost:8000/docs`).
 
 Это **упрощённый прототип** для иллюстрации связей модулей и политик безопасности из документации, а не прошивка реального изделия.
+=======
+>>>>>>> 1ec9d15e7cf9b65ca0e617a36b41403804d0fc4e
