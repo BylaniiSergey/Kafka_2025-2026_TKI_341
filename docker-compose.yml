@@ -1,7 +1,51 @@
+# Микросервисы: внутри сети каждый слушает порт 8000.
+# Снаружи хоста — 8110–8116 (порты 8001–8006 не используются).
 services:
-  api:
-    build: .
+  stop:
+    build: ./services/stop
     ports:
-      - "8000:8000"
+      - "8111:8000"
+
+  carriage:
+    build: ./services/carriage
+    ports:
+      - "8112:8000"
+
+  tactile:
+    build: ./services/tactile
+    ports:
+      - "8113:8000"
+
+  temperature:
+    build: ./services/temperature
+    ports:
+      - "8114:8000"
+
+  heating:
+    build: ./services/heating
+    ports:
+      - "8115:8000"
+
+  cooling:
+    build: ./services/cooling
+    ports:
+      - "8116:8000"
+
+  control_gateway:
+    build: ./services/control_gateway
+    ports:
+      - "8110:8000"
+    depends_on:
+      - stop
+      - carriage
+      - tactile
+      - temperature
+      - heating
+      - cooling
     environment:
-      - PYTHONUNBUFFERED=1
+      STOP_SERVICE_URL: http://stop:8000
+      CARRIAGE_SERVICE_URL: http://carriage:8000
+      TACTILE_SERVICE_URL: http://tactile:8000
+      TEMPERATURE_SERVICE_URL: http://temperature:8000
+      HEATING_SERVICE_URL: http://heating:8000
+      COOLING_SERVICE_URL: http://cooling:8000

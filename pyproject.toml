@@ -11,20 +11,15 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-kafka = ["kafka-python>=2.0.2"]
-api = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-]
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
 ]
 
 [project.scripts]
 exoskeleton-demo = "exoskeleton.demo:main"
-exoskeleton-kafka-demo = "exoskeleton.demo_kafka:main"
-exoskeleton-api = "exoskeleton.api.run:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

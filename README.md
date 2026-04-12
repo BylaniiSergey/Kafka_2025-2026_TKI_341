@@ -109,9 +109,9 @@
 | Нагрев | `exoskeleton/modules/climate/heating.py` |
 | Охлаждение | `exoskeleton/modules/climate/cooling.py` |
 | Тактильные сигналы пациенту | `exoskeleton/modules/tactile.py` |
-| HTTP API (FastAPI) | `exoskeleton/api/app.py` |
+| Микросервисы FastAPI (Docker, только сеть) | каталог `services/` |
 
-**Запуск демонстрации** (нужен Python 3.10+):
+**Запуск демонстрации**:
 
 ```bash
 cd Exoskeleton
@@ -122,54 +122,28 @@ python main.py
 
 В консоли по шагам показываются сценарии: инициализация, сеанс, климат, аварийный стоп, корпус, сброс врачом, нештатная команда, подозрительные датчики температуры.
 
-### Сценарий Kafka (топики + JSON)
+### FastAPI и шлюз
 
-Логика модулей не меняется: поверх `ExoskeletonControlSystem` стоит обработчик JSON-команд (`exoskeleton/messaging/json_handler.py`).
+В `services/*` — микросервисы: у каждого свой `main.py`, `requirements.txt`, `Dockerfile`; обмен **только по HTTP**. Для центра и планшета единая точка входа — **шлюз** `control_gateway`: `POST /commands`, `GET /telemetry`. Все поля запросов и ответов, примеры и схемы — в интерактивной документации после `docker compose up`: http://localhost:8110/docs (там же можно вызывать методы без отдельных скриптов).
 
-| Топик | Назначение |
-|-------|------------|
-| `exoskeleton.commands` | Команды от центра / планшета (JSON) |
-| `exoskeleton.telemetry` | Ответ + снимок состояния (`snapshot`) |
-| `exoskeleton.events` | События безопасности |
+Кратко по полю `action` у шлюза: `initialize`, `start_session`, `end_session`, `emergency_stop`, `monitoring_stop`, `reset_emergency`, `open_carriage`, `close_carriage`, `update_climate`, `tactile_contact`, `telemetry` / `snapshot`. Где нужен инициатор — поле `source`: `patient`, `doctor_tablet`, `rehab_center`, `operator`, `monitoring`. По желанию — `correlation_id`.
 
-**Мок (брокер не нужен):**
+Локальные тесты без Docker: `pip install ".[dev]"`, затем `pytest`.
 
-```bash
-python -m exoskeleton.demo_kafka
-```
-
-**Живой Kafka** (после `pip install ".[kafka]"` или `pip install kafka-python`):
-
-```bash
-python -m exoskeleton.messaging.kafka_runner --bootstrap localhost:9092
-```
-
-Потребитель читает `exoskeleton.commands`, пишет ответы в `exoskeleton.telemetry` и при наличии поля `event` — в `exoskeleton.events`.
-
-Примеры поля `action` в JSON: `initialize`, `start_session`, `end_session`, `emergency_stop`, `monitoring_stop`, `reset_emergency`, `open_carriage`, `close_carriage`, `update_climate`, `tactile_contact`, `telemetry` / `snapshot`. У команд с источником нужен `source`: одно из `patient`, `doctor_tablet`, `rehab_center`, `operator`, `monitoring`. Опционально `correlation_id` для сквозной трассировки.
-
-### FastAPI и тесты
-
-Установка: `pip install ".[api,dev]"`.
-
-| Метод | Путь | Описание |
-|-------|------|----------|
-| GET | `/health` | Проверка живости |
-| GET | `/telemetry` | Снимок состояния (`ExoskeletonControlSystem.snapshot`) |
-| POST | `/commands` | Тело запроса — тот же JSON, что для Kafka (`CommandJsonHandler`) |
-
-Запуск сервера: `python -m exoskeleton.api.run` или `exoskeleton-api` (после установки пакета). Документация OpenAPI: `http://127.0.0.1:8000/docs`.
-
-Тесты API: `pytest` из корня репозитория.
-
-### Docker
-
-Сборка и запуск только API:
+### Docker (микросервисы)
 
 ```bash
 docker compose up --build
 ```
 
-Сервис слушает порт **8000** (`http://localhost:8000/docs`).
+Запускаются **7** контейнеров: шлюз + 6 модулей. Снаружи используются порты из таблицы ниже.
 
-Это **упрощённый прототип** для иллюстрации связей модулей и политик безопасности из документации, а не прошивка реального изделия.
+| Хост | Сервис |
+|-----:|--------|
+| 8110 | шлюз управления — http://localhost:8110/docs |
+| 8111 | стоп |
+| 8112 | корпус/коляска |
+| 8113 | тактиль |
+| 8114 | температура |
+| 8115 | нагрев |
+| 8116 | охлаждение |
