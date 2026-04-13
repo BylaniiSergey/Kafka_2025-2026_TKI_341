@@ -96,9 +96,31 @@
 
 ---
 
-## Прототип на Python (реализация по высокоуровневой архитектуре)
+## Объединении модулей 
 
-В репозитории добавлен учебный код: центральная **система управления** и шесть подсистем, согласованные с описанием выше.
+Модули общаются **по сети (HTTP)**, без прямых импортов друг друга в рантайме контейнеров.
+
+| Каталог | Назначение |
+|---------|------------|
+| **`exoskeleton_project/`** | **Основная интегрированная сборка команды.** Центральный сервис `control_system` оркестрирует остальные микросервисы (руки, ноги, нейроинтерфейсы, сила/приводы, стоп, коляска, климат, тактиль, связь, мониторинг, датчики, батарея и заряд и др.). Связь задаётся URL в переменных окружения |
+| **`services/`** | **Упрощённый прототип** на 6 подсистем + шлюз `control_gateway` для быстрой демонстрации и отчёта без полного стенда. Запуск из **корня** репозитория: `docker compose up --build`. На хосте порты **8110–8116**. |
+| **`exoskeleton/`** | **Пакет Python** с моделью «в одном процессе»: `control_system`, модули стопа, коляски, климата, тактиля и учебные сценарии (`demo`). Удобно для `pytest` и запуска `python main.py` без Docker. |
+| **`exoskeleton/modules/module_*`** | Дополнительные промежуточные микросервисы (связь, мониторинг, заряд и т.п.) — по мере подключения к общей compose-команде. |
+
+**Быстрый старт полной сборки команды:**
+
+```bash
+cd exoskeleton_project
+docker compose up --build
+```
+
+После старта документация центрального API: **http://localhost:8000/docs** (сервис `control_system`). Локальный запуск всех процессов без Docker (по очереди портов) описан в `exoskeleton_project/run_all.py`.
+
+---
+
+### Пакет `exoskeleton/`
+
+Учебная **система управления** и ключевые модули в виде классов Python — удобно для сценариев и тестов без контейнеров.
 
 | Компонент | Файл |
 |-----------|------|
@@ -106,43 +128,39 @@
 | Модуль остановки | `exoskeleton/modules/stop.py` |
 | Открытие/закрытие корпуса (коляски) | `exoskeleton/modules/carriage.py` |
 | Контроль температуры внутри | `exoskeleton/modules/climate/temperature.py` |
-| Нагрев | `exoskeleton/modules/climate/heating.py` |
-| Охлаждение | `exoskeleton/modules/climate/cooling.py` |
+| Нагрев / охлаждение | `exoskeleton/modules/climate/heating.py`, `cooling.py` |
 | Тактильные сигналы пациенту | `exoskeleton/modules/tactile.py` |
-| Микросервисы FastAPI (Docker, только сеть) | каталог `services/` |
 
-**Запуск демонстрации**:
+**Локальная демонстрация:**
 
 ```bash
-cd Exoskeleton
 python main.py
+# или: python -m exoskeleton.demo
 ```
 
-или `python -m exoskeleton.demo`.
+В консоли по шагам: инициализация, сеанс, климат, аварийный стоп, корпус, сброс, нештатные ситуации.
 
-В консоли по шагам показываются сценарии: инициализация, сеанс, климат, аварийный стоп, корпус, сброс врачом, нештатная команда, подозрительные датчики температуры.
+**Тесты:** `pip install ".[dev]"`, затем `pytest`.
 
-### FastAPI и шлюз
+### Полная микросервисная сборка — `exoskeleton_project/`
 
-В `services/*` — микросервисы: у каждого свой `main.py`, `requirements.txt`, `Dockerfile`; обмен **только по HTTP**. Для центра и планшета единая точка входа — **шлюз** `control_gateway`: `POST /commands`, `GET /telemetry`. Все поля запросов и ответов, примеры и схемы — в интерактивной документации после `docker compose up`: http://localhost:8110/docs (там же можно вызывать методы без отдельных скриптов).
+Здесь объединены модули команды: **верхние и нижние конечности**, **нейросигналы**, **силовой контроль**, **гусеница/колено**, **стоп**, **коляска**, **температура / нагрев / охлаждение / тактиль**, **связь**, **мониторинг**, **датчики**, **батарея / контроллер / заряд** и др. Каждый сервис — свой каталог с `Dockerfile` и `main.py`; адреса передаются в **`control_system`** через переменные окружения (см. `docker-compose.yml` в этом каталоге).
 
-Кратко по полю `action` у шлюза: `initialize`, `start_session`, `end_session`, `emergency_stop`, `monitoring_stop`, `reset_emergency`, `open_carriage`, `close_carriage`, `update_climate`, `tactile_contact`, `telemetry` / `snapshot`. Где нужен инициатор — поле `source`: `patient`, `doctor_tablet`, `rehab_center`, `operator`, `monitoring`. По желанию — `correlation_id`.
+### Упрощённый стенд — корневой `docker-compose.yml` и `services/`
 
-Локальные тесты без Docker: `pip install ".[dev]"`, затем `pytest`.
-
-### Docker (микросервисы)
+Семь контейнеров (шлюз + шесть подсистем) для короткой демонстрации; на хосте **8110–8116**.
 
 ```bash
 docker compose up --build
 ```
 
-Запускаются **7** контейнеров: шлюз + 6 модулей. Снаружи используются порты из таблицы ниже.
+Шлюз: **http://localhost:8110/docs** (`POST /commands`, `GET /telemetry`). Поля запросов и примеры — в Swagger; типичные значения `action`: `initialize`, `start_session`, `end_session`, `emergency_stop`, `monitoring_stop`, `reset_emergency`, `open_carriage`, `close_carriage`, `update_climate`, `tactile_contact`, `telemetry` / `snapshot`; при необходимости — `source` (`patient`, `doctor_tablet`, `rehab_center`, `operator`, `monitoring`) и `correlation_id`.
 
 | Хост | Сервис |
 |-----:|--------|
-| 8110 | шлюз управления — http://localhost:8110/docs |
+| 8110 | шлюз — http://localhost:8110/docs |
 | 8111 | стоп |
-| 8112 | корпус/коляска |
+| 8112 | корпус / коляска |
 | 8113 | тактиль |
 | 8114 | температура |
 | 8115 | нагрев |

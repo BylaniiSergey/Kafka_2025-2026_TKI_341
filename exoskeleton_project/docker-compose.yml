@@ -1,0 +1,420 @@
+version: '3.8'
+
+services:
+
+  # ===== УПРАВЛЕНИЕ =====
+  control_system:
+    build:
+      context: .
+      dockerfile: control_system/Dockerfile
+    container_name: control_system
+    ports:
+      - "8000:8000"
+    environment:
+      - MODULE_NAME=control_system
+      # Руки
+      - NEURAL_SIGNAL_URL=http://neural_signal_system:8001
+      - ARM_MOVEMENT_URL=http://arm_movement_system:8002
+      - UPPER_ARM_URL=http://upper_arm_system:8003
+      - MIDDLE_ARM_URL=http://middle_arm_system:8004
+      - FINGERS_URL=http://fingers_system:8005
+      - FORCE_CONTROL_URL=http://force_control_system:8006
+      # Ноги
+      - LEG_NEURAL_URL=http://leg_neural_signal_system:9001
+      - LEG_MOVEMENT_URL=http://leg_movement_system:9002
+      - KNEE_BELT_URL=http://knee_belt_system:9003
+      - TRACK_SYSTEM_URL=http://track_system:9004
+      - LEG_FORCE_URL=http://leg_force_control_system:9006
+      # Вспомогательные
+      - STOP_MODULE_URL=http://stop_module:7001
+      - CARRIAGE_URL=http://carriage_system:7002
+      - TEMPERATURE_URL=http://temperature_system:7003
+      - HEATING_URL=http://heating_system:7004
+      - COOLING_URL=http://cooling_system:7005
+      - TACTILE_URL=http://tactile_system:7006
+      # Связь и мониторинг
+      - COMMS_URL=http://comms_module:6001
+      - MONITORING_URL=http://monitoring_system:6002
+      - SENSORS_URL=http://sensors_module:6003
+      - BATTERY_CTRL_URL=http://battery_controller:6004
+      - CHARGER_URL=http://charger_module:6005
+      - BATTERY_CELL_URL=http://battery_cell:6006
+    depends_on:
+      - neural_signal_system
+      - arm_movement_system
+      - upper_arm_system
+      - middle_arm_system
+      - fingers_system
+      - force_control_system
+      - leg_neural_signal_system
+      - leg_movement_system
+      - knee_belt_system
+      - track_system
+      - leg_force_control_system
+      - stop_module
+      - carriage_system
+      - temperature_system
+      - heating_system
+      - cooling_system
+      - tactile_system
+      - comms_module
+      - monitoring_system
+      - sensors_module
+      - battery_controller
+      - charger_module
+      - battery_cell
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== СВЯЗЬ И МОНИТОРИНГ =====
+  comms_module:
+    build:
+      context: .
+      dockerfile: comms_module/Dockerfile
+    container_name: comms_module
+    ports:
+      - "6001:6001"
+    environment:
+      - MODULE_NAME=comms_module
+      - PORT=6001
+      - MONITORING_URL=http://monitoring_system:6002
+      - SENSORS_URL=http://sensors_module:6003
+    depends_on:
+      - monitoring_system
+      - sensors_module
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  monitoring_system:
+    build:
+      context: .
+      dockerfile: monitoring_system/Dockerfile
+    container_name: monitoring_system
+    ports:
+      - "6002:6002"
+    environment:
+      - MODULE_NAME=monitoring_system
+      - PORT=6002
+      - SENSORS_URL=http://sensors_module:6003
+      - BATTERY_CTRL_URL=http://battery_controller:6004
+      - COMMS_URL=http://comms_module:6001
+    depends_on:
+      - sensors_module
+      - battery_controller
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  sensors_module:
+    build:
+      context: .
+      dockerfile: sensors_module/Dockerfile
+    container_name: sensors_module
+    ports:
+      - "6003:6003"
+    environment:
+      - MODULE_NAME=sensors_module
+      - PORT=6003
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  battery_controller:
+    build:
+      context: .
+      dockerfile: battery_controller/Dockerfile
+    container_name: battery_controller
+    ports:
+      - "6004:6004"
+    environment:
+      - MODULE_NAME=battery_controller
+      - PORT=6004
+      - CHARGER_URL=http://charger_module:6005
+      - BATTERY_CELL_URL=http://battery_cell:6006
+    depends_on:
+      - charger_module
+      - battery_cell
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  charger_module:
+    build:
+      context: .
+      dockerfile: charger_module/Dockerfile
+    container_name: charger_module
+    ports:
+      - "6005:6005"
+    environment:
+      - MODULE_NAME=charger_module
+      - PORT=6005
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  battery_cell:
+    build:
+      context: .
+      dockerfile: battery_cell/Dockerfile
+    container_name: battery_cell
+    ports:
+      - "6006:6006"
+    environment:
+      - MODULE_NAME=battery_cell
+      - PORT=6006
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== ВСПОМОГАТЕЛЬНЫЕ =====
+  stop_module:
+    build:
+      context: .
+      dockerfile: stop_module/Dockerfile
+    container_name: stop_module
+    ports:
+      - "7001:7001"
+    environment:
+      - MODULE_NAME=stop_module
+      - PORT=7001
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  carriage_system:
+    build:
+      context: .
+      dockerfile: carriage_system/Dockerfile
+    container_name: carriage_system
+    ports:
+      - "7002:7002"
+    environment:
+      - MODULE_NAME=carriage_system
+      - PORT=7002
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  temperature_system:
+    build:
+      context: .
+      dockerfile: temperature_system/Dockerfile
+    container_name: temperature_system
+    ports:
+      - "7003:7003"
+    environment:
+      - MODULE_NAME=temperature_system
+      - PORT=7003
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  heating_system:
+    build:
+      context: .
+      dockerfile: heating_system/Dockerfile
+    container_name: heating_system
+    ports:
+      - "7004:7004"
+    environment:
+      - MODULE_NAME=heating_system
+      - PORT=7004
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  cooling_system:
+    build:
+      context: .
+      dockerfile: cooling_system/Dockerfile
+    container_name: cooling_system
+    ports:
+      - "7005:7005"
+    environment:
+      - MODULE_NAME=cooling_system
+      - PORT=7005
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  tactile_system:
+    build:
+      context: .
+      dockerfile: tactile_system/Dockerfile
+    container_name: tactile_system
+    ports:
+      - "7006:7006"
+    environment:
+      - MODULE_NAME=tactile_system
+      - PORT=7006
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== РУКИ =====
+  neural_signal_system:
+    build:
+      context: .
+      dockerfile: neural_signal_system/Dockerfile
+    container_name: neural_signal_system
+    ports:
+      - "8001:8001"
+    environment:
+      - MODULE_NAME=neural_signal_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  arm_movement_system:
+    build:
+      context: .
+      dockerfile: arm_movement_system/Dockerfile
+    container_name: arm_movement_system
+    ports:
+      - "8002:8002"
+    environment:
+      - MODULE_NAME=arm_movement_system
+      - UPPER_ARM_URL=http://upper_arm_system:8003
+      - MIDDLE_ARM_URL=http://middle_arm_system:8004
+      - FINGERS_URL=http://fingers_system:8005
+    depends_on:
+      - upper_arm_system
+      - middle_arm_system
+      - fingers_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  upper_arm_system:
+    build:
+      context: .
+      dockerfile: upper_arm_system/Dockerfile
+    container_name: upper_arm_system
+    ports:
+      - "8003:8003"
+    environment:
+      - MODULE_NAME=upper_arm_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  middle_arm_system:
+    build:
+      context: .
+      dockerfile: middle_arm_system/Dockerfile
+    container_name: middle_arm_system
+    ports:
+      - "8004:8004"
+    environment:
+      - MODULE_NAME=middle_arm_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  fingers_system:
+    build:
+      context: .
+      dockerfile: fingers_system/Dockerfile
+    container_name: fingers_system
+    ports:
+      - "8005:8005"
+    environment:
+      - MODULE_NAME=fingers_system
+      - FORCE_CONTROL_URL=http://force_control_system:8006
+    depends_on:
+      - force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  force_control_system:
+    build:
+      context: .
+      dockerfile: force_control_system/Dockerfile
+    container_name: force_control_system
+    ports:
+      - "8006:8006"
+    environment:
+      - MODULE_NAME=force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== НОГИ =====
+  leg_neural_signal_system:
+    build:
+      context: .
+      dockerfile: leg_neural_signal_system/Dockerfile
+    container_name: leg_neural_signal_system
+    ports:
+      - "9001:9001"
+    environment:
+      - MODULE_NAME=leg_neural_signal_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  leg_movement_system:
+    build:
+      context: .
+      dockerfile: leg_movement_system/Dockerfile
+    container_name: leg_movement_system
+    ports:
+      - "9002:9002"
+    environment:
+      - MODULE_NAME=leg_movement_system
+      - KNEE_SYSTEM_URL=http://knee_belt_system:9003
+      - TRACK_SYSTEM_URL=http://track_system:9004
+      - LEG_FORCE_URL=http://leg_force_control_system:9006
+    depends_on:
+      - knee_belt_system
+      - track_system
+      - leg_force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  knee_belt_system:
+    build:
+      context: .
+      dockerfile: knee_belt_system/Dockerfile
+    container_name: knee_belt_system
+    ports:
+      - "9003:9003"
+    environment:
+      - MODULE_NAME=knee_belt_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  track_system:
+    build:
+      context: .
+      dockerfile: track_system/Dockerfile
+    container_name: track_system
+    ports:
+      - "9004:9004"
+    environment:
+      - MODULE_NAME=track_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  leg_force_control_system:
+    build:
+      context: .
+      dockerfile: leg_force_control_system/Dockerfile
+    container_name: leg_force_control_system
+    ports:
+      - "9006:9006"
+    environment:
+      - MODULE_NAME=leg_force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+networks:
+  exo_network:
+    driver: bridge
