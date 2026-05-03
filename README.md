@@ -93,3 +93,37 @@
 <img width="634" height="236" alt="image" src="https://github.com/user-attachments/assets/a8ba707b-0204-4925-a71e-5a943e436504" />
 
 <img width="438" height="326" alt="image" src="https://github.com/user-attachments/assets/bc16d007-09bf-44a0-a3cd-17fbfd85df3b" />
+
+
+
+
+НОВОЕ
+<img width="906" height="384" alt="image" src="https://github.com/user-attachments/assets/3152f8ba-11f0-41da-bf5f-247d54d46b89" />
+
+<img width="1090" height="294" alt="image" src="https://github.com/user-attachments/assets/7033232d-0c36-4df7-891f-a3f5ae07987d" />
+
+<img width="1246" height="281" alt="image" src="https://github.com/user-attachments/assets/498d9578-3e14-4d3e-866e-2169f732833a" />
+
+<img width="878" height="294" alt="image" src="https://github.com/user-attachments/assets/fd2af232-2ead-4d15-81fc-7ad3d711ec7b" />
+
+<img width="1134" height="413" alt="image" src="https://github.com/user-attachments/assets/75db10ce-1622-4cfb-b132-e523da8d5a8b" />
+
+<img width="1325" height="352" alt="image" src="https://github.com/user-attachments/assets/55a1a213-dad1-4648-868e-00b369ce2a98" />
+
+<img width="1051" height="252" alt="image" src="https://github.com/user-attachments/assets/4879ffa7-d672-4318-8751-6a33eec8a37d" />
+
+<img width="1156" height="323" alt="image" src="https://github.com/user-attachments/assets/65f5f6b2-1632-4b4f-b356-24a6648c12e5" />
+
+<img width="1043" height="294" alt="image" src="https://github.com/user-attachments/assets/be14efd8-0e30-44d6-a79d-36dbb4d3756f" />
+
+<img width="1043" height="294" alt="image" src="https://github.com/user-attachments/assets/7a28dd4d-6fc0-4ac2-8920-e79eaca56384" />
+
+<img width="988" height="384" alt="image" src="https://github.com/user-attachments/assets/3b043dbe-7c53-4985-97e7-98f691f6321c" />
+
+<img width="844" height="252" alt="image" src="https://github.com/user-attachments/assets/a0cc5a41-5dfa-42d5-82d3-286ae6ea35a0" />
+
+<img width="1045" height="252" alt="image" src="https://github.com/user-attachments/assets/87d29045-6f81-4ec3-9dd9-37da394c0f21" />
+
+<img width="1060" height="384" alt="image" src="https://github.com/user-attachments/assets/8099d3b7-6498-4f55-89d7-693da52a751b" />
+
+![Uploading image.png…]()
