@@ -98,9 +98,10 @@
 
 
 НОВОЕ
-<img width="949" height="384" alt="image" src="https://github.com/user-attachments/assets/2cab9dbf-7518-4483-a96d-aa023f51b3f8" />
 
-<img width="968" height="323" alt="image" src="https://github.com/user-attachments/assets/caa16c52-4dc2-4966-b503-9009ea2bebb7" />
+<img width="848" height="384" alt="image" src="https://github.com/user-attachments/assets/dc66b01f-1513-4cfa-a71b-6e002aa62487" />
+
+<img width="926" height="323" alt="image" src="https://github.com/user-attachments/assets/eb982ebc-2a2c-4943-917d-6825a85223bb" />
 
 <img width="1149" height="294" alt="image" src="https://github.com/user-attachments/assets/5aa5c090-def9-4cc2-b131-d00f4cdc5fe8" />
 
