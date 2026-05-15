@@ -8,7 +8,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import (
-    create_engine, Column, Integer, Float, Boolean, String, DateTime, Text
+    create_engine, Column, Integer, Float,
+    Boolean, String, DateTime, Text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -16,40 +17,51 @@ HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 6002))
 MODULE_NAME = os.getenv('MODULE_NAME', 'monitoring_system')
 
+SENSORS_URL = os.getenv(
+    'SENSORS_URL', 'http://localhost:6003'
+)
+BATTERY_CTRL_URL = os.getenv(
+    'BATTERY_CTRL_URL', 'http://localhost:6004'
+)
+COMMS_URL = os.getenv(
+    'COMMS_URL', 'http://localhost:6001'
+)
+SENSOR_VERIFICATION_URL = os.getenv(
+    'SENSOR_VERIFICATION_URL', 'http://localhost:5302'
+)
+CRITICAL_SITUATION_URL = os.getenv(
+    'CRITICAL_SITUATION_URL', 'http://localhost:5301'
+)
+REQUEST_TIMEOUT = 5.0
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
 )
 logger = logging.getLogger(MODULE_NAME)
 
-SENSORS_URL = os.getenv('SENSORS_URL', 'http://localhost:6003')
-BATTERY_CTRL_URL = os.getenv(
-    'BATTERY_CTRL_URL', 'http://localhost:6004'
-)
-COMMS_URL = os.getenv('COMMS_URL', 'http://localhost:6001')
-REQUEST_TIMEOUT = 5.0
-
 DATABASE_URL = 'sqlite:///monitoring_system.db'
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
 class TelemetryLogDB(Base):
     __tablename__ = 'telemetry_log'
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     joint_angle = Column(Float)
     torque = Column(Float)
     motor_temp = Column(Float)
     battery_soc = Column(Float)
     alarms = Column(Text)
+    sensor_trusted = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class AlarmLogDB(Base):
     __tablename__ = 'alarm_log'
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     alarm_type = Column(String(100))
     value = Column(Float, nullable=True)
@@ -60,7 +72,9 @@ class AlarmLogDB(Base):
 Base.metadata.create_all(engine)
 
 
-def save_telemetry(data: dict, alarms: list):
+def save_telemetry(
+    data: dict, alarms: list, sensor_trusted: bool
+):
     session = SessionLocal()
     try:
         session.add(TelemetryLogDB(
@@ -68,14 +82,19 @@ def save_telemetry(data: dict, alarms: list):
             torque=data.get('torque'),
             motor_temp=data.get('motor_temp'),
             battery_soc=data.get('battery', {}).get('soc'),
-            alarms=','.join(alarms) if alarms else None
+            alarms=','.join(alarms) if alarms else None,
+            sensor_trusted=sensor_trusted
         ))
         session.commit()
     finally:
         session.close()
 
 
-def save_alarm(alarm_type: str, value: float = None, sent: bool = False):
+def save_alarm(
+    alarm_type: str,
+    value: float = None,
+    sent: bool = False
+):
     session = SessionLocal()
     try:
         session.add(AlarmLogDB(
@@ -88,7 +107,7 @@ def save_alarm(alarm_type: str, value: float = None, sent: bool = False):
         session.close()
 
 
-app = FastAPI(title="Monitoring System", version="2.0")
+app = FastAPI(title="Monitoring System", version="2.1")
 
 
 @app.get('/health')
@@ -98,12 +117,6 @@ def health():
 
 @app.get('/telemetry')
 def get_telemetry():
-    """
-    Система мониторинга:
-    monitoring → sensors (показания)
-    monitoring → battery_controller (заряд)
-    monitoring → comms (аларм если нужно)
-    """
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
             sensors_resp = c.get(f'{SENSORS_URL}/readings')
@@ -112,14 +125,29 @@ def get_telemetry():
         sensor_data = sensors_resp.json()
         battery_data = battery_resp.json()
 
-        telemetry = {
-            **sensor_data,
-            'battery': battery_data
-        }
-
-        # Проверка алармов
+        telemetry = {**sensor_data, 'battery': battery_data}
         alarms = []
 
+        # Верификация датчиков
+        sensor_trusted = True
+        try:
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+                verify_resp = c.get(
+                    f'{SENSOR_VERIFICATION_URL}/auto_verify',
+                    params={'metric': 'joint_angle'}
+                )
+                verify_data = verify_resp.json()
+                sensor_trusted = verify_data.get('passed', True)
+        except Exception as e:
+            logger.error(f"Sensor verification failed: {e}")
+            sensor_trusted = False
+
+        if not sensor_trusted:
+            alarms.append('SENSOR_VERIFICATION_FAILED')
+            save_alarm('SENSOR_VERIFICATION_FAILED')
+            logger.warning("ALARM: SENSOR_VERIFICATION_FAILED")
+
+        # Стандартные аларм-проверки
         if sensor_data.get('joint_angle', 0) > 120:
             alarms.append('HYPEREXTENSION')
             save_alarm(
@@ -149,7 +177,39 @@ def get_telemetry():
                 f"temp={sensor_data['motor_temp']}"
             )
 
-        # Отправка алармов в систему связи
+        # Отправка метрик в critical_situation_recognition
+        try:
+            metrics = [
+                {
+                    'metric': 'joint_angle',
+                    'value': sensor_data.get('joint_angle', 0),
+                    'source': 'sensors_module',
+                    'sensor_trusted': sensor_trusted
+                },
+                {
+                    'metric': 'motor_temp',
+                    'value': sensor_data.get('motor_temp', 0),
+                    'source': 'sensors_module',
+                    'sensor_trusted': sensor_trusted
+                },
+                {
+                    'metric': 'torque',
+                    'value': sensor_data.get('torque', 0),
+                    'source': 'sensors_module',
+                    'sensor_trusted': sensor_trusted
+                }
+            ]
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+                c.post(
+                    f'{CRITICAL_SITUATION_URL}/batch_analyze',
+                    json=metrics
+                )
+        except Exception as e:
+            logger.error(
+                f"Critical situation analysis failed: {e}"
+            )
+
+        # Отправка алармов в comms
         if alarms:
             try:
                 with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
@@ -164,7 +224,8 @@ def get_telemetry():
                 logger.error(f"Failed to send alarms: {e}")
 
         telemetry['alarms'] = alarms
-        save_telemetry(telemetry, alarms)
+        telemetry['sensor_trusted'] = sensor_trusted
+        save_telemetry(telemetry, alarms, sensor_trusted)
 
         return telemetry
 
@@ -175,14 +236,15 @@ def get_telemetry():
 
 @app.post('/emergency_stop')
 def emergency_stop():
-    """Экстренная остановка от мониторинга"""
     logger.critical("Emergency stop triggered by monitoring")
     save_alarm('EMERGENCY_STOP_MONITORING')
     return {'ok': True, 'message': 'Emergency stop triggered'}
 
 
 @app.get('/telemetry_history')
-def get_telemetry_history(limit: int = Query(100, ge=1, le=1000)):
+def get_telemetry_history(
+    limit: int = Query(100, ge=1, le=1000)
+):
     session = SessionLocal()
     try:
         logs = (
@@ -197,15 +259,19 @@ def get_telemetry_history(limit: int = Query(100, ge=1, le=1000)):
             'motor_temp': l.motor_temp,
             'battery_soc': l.battery_soc,
             'alarms': l.alarms,
-            'created_at': l.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                if l.created_at else None
+            'sensor_trusted': l.sensor_trusted,
+            'created_at': l.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if l.created_at else None
         } for l in logs]
     finally:
         session.close()
 
 
 @app.get('/alarm_history')
-def get_alarm_history(limit: int = Query(100, ge=1, le=1000)):
+def get_alarm_history(
+    limit: int = Query(100, ge=1, le=1000)
+):
     session = SessionLocal()
     try:
         alarms = (
@@ -218,8 +284,9 @@ def get_alarm_history(limit: int = Query(100, ge=1, le=1000)):
             'alarm_type': a.alarm_type,
             'value': a.value,
             'sent_to_comms': a.sent_to_comms,
-            'created_at': a.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                if a.created_at else None
+            'created_at': a.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if a.created_at else None
         } for a in alarms]
     finally:
         session.close()

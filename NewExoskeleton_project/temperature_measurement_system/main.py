@@ -1,20 +1,36 @@
-# Система измерения температуры внутренней части (SS): только измерение и признак аварии для аварийного модуля.
+# temperature_measurement_system/main.py
 import os
 import logging
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 HOST = "0.0.0.0"
-PORT = int(os.getenv("PORT", "7105"))
-MODULE_NAME = os.getenv("MODULE_NAME", "temperature_measurement_system")
+PORT = int(os.getenv("PORT", "5304"))
+MODULE_NAME = os.getenv(
+    "MODULE_NAME", "temperature_measurement_system"
+)
 
-BODY_CRITICAL_HIGH = float(os.getenv("BODY_CRITICAL_HIGH_C", "40.0"))
-BODY_CRITICAL_LOW = float(os.getenv("BODY_CRITICAL_LOW_C", "35.0"))
-AIR_CRITICAL_HIGH = float(os.getenv("AIR_CRITICAL_HIGH_C", "42.0"))
+EMERGENCY_CONTROL_URL = os.getenv(
+    "EMERGENCY_CONTROL_URL", "http://localhost:5201"
+)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+BODY_CRITICAL_HIGH = float(
+    os.getenv("BODY_CRITICAL_HIGH_C", "40.0")
+)
+BODY_CRITICAL_LOW = float(
+    os.getenv("BODY_CRITICAL_LOW_C", "35.0")
+)
+AIR_CRITICAL_HIGH = float(
+    os.getenv("AIR_CRITICAL_HIGH_C", "42.0")
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+)
 logger = logging.getLogger(MODULE_NAME)
 
 _body_c = 36.6
@@ -27,7 +43,26 @@ class MeasureBody(BaseModel):
     air_temp_c: float
 
 
-app = FastAPI(title="Temperature measurement", version="1.0")
+def _signal_emergency(reason: str):
+    try:
+        with httpx.Client(timeout=3.0) as c:
+            c.post(
+                f"{EMERGENCY_CONTROL_URL}/emergency",
+                json={
+                    "source": MODULE_NAME,
+                    "reason": reason
+                }
+            )
+        logger.critical(
+            f"Emergency signal sent: {reason}"
+        )
+    except Exception as e:
+        logger.error(f"Emergency signal failed: {e}")
+
+
+app = FastAPI(
+    title="Temperature Measurement System", version="1.1"
+)
 
 
 @app.get("/health")
@@ -35,23 +70,14 @@ def health():
     return {"status": "ok", "service": MODULE_NAME}
 
 
-@app.post("/measure")
-def measure(body: MeasureBody):
-    global _body_c, _air_c, _trusted
-    _body_c = body.body_temp_c
-    _air_c = body.air_temp_c
-    _trusted = 25.0 <= _body_c <= 45.0 and 0.0 <= _air_c <= 55.0
-    if not _trusted:
-        logger.warning("Temperature readings rejected as implausible")
-    return status()
-
-
 @app.get("/status")
-def status():
+def get_status():
     emergency = False
     reason = None
+
     if _trusted:
-        if _body_c >= BODY_CRITICAL_HIGH or _air_c >= AIR_CRITICAL_HIGH:
+        if _body_c >= BODY_CRITICAL_HIGH \
+                or _air_c >= AIR_CRITICAL_HIGH:
             emergency = True
             reason = "thermal_overheat"
         elif _body_c <= BODY_CRITICAL_LOW:
@@ -67,8 +93,32 @@ def status():
         "air_temp_c": _air_c,
         "trusted": _trusted,
         "emergency_recommended": emergency,
-        "emergency_reason": reason,
+        "emergency_reason": reason
     }
+
+
+@app.post("/measure")
+def measure(body: MeasureBody):
+    global _body_c, _air_c, _trusted
+    _body_c = body.body_temp_c
+    _air_c = body.air_temp_c
+    _trusted = (
+        25.0 <= _body_c <= 45.0
+        and 0.0 <= _air_c <= 55.0
+    )
+    if not _trusted:
+        logger.warning(
+            "Temperature readings rejected as implausible"
+        )
+
+    result = get_status()
+
+    if result.get("emergency_recommended"):
+        _signal_emergency(
+            result.get("emergency_reason", "thermal_emergency")
+        )
+
+    return result
 
 
 if __name__ == "__main__":
