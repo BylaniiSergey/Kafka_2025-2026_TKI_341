@@ -1,4 +1,4 @@
-# Критичные датчики в ногах — резервный канал для контроля силы и ограничений ног (MM).
+# critical_sensors_legs/main.py
 import os
 import logging
 from typing import Any, Dict
@@ -8,10 +8,15 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 HOST = "0.0.0.0"
-PORT = int(os.getenv("PORT", "7102"))
-MODULE_NAME = os.getenv("MODULE_NAME", "critical_sensors_legs")
+PORT = int(os.getenv("PORT", "5307"))
+MODULE_NAME = os.getenv(
+    "MODULE_NAME", "critical_sensors_legs"
+)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+)
 logger = logging.getLogger(MODULE_NAME)
 
 _state: Dict[str, Any] = {
@@ -26,15 +31,17 @@ _state: Dict[str, Any] = {
 
 
 class SensorsUpdate(BaseModel):
-    hip_left_deg: float | None = None
-    hip_right_deg: float | None = None
-    knee_left_deg: float | None = None
-    knee_right_deg: float | None = None
-    pressure_contact_left_n: float | None = None
-    pressure_contact_right_n: float | None = None
+    hip_left_deg: float = None
+    hip_right_deg: float = None
+    knee_left_deg: float = None
+    knee_right_deg: float = None
+    pressure_contact_left_n: float = None
+    pressure_contact_right_n: float = None
 
 
-app = FastAPI(title="Critical sensors — legs", version="1.0")
+app = FastAPI(
+    title="Critical sensors — legs", version="1.1"
+)
 
 
 @app.get("/health")
@@ -44,7 +51,11 @@ def health():
 
 @app.get("/snapshot")
 def snapshot():
-    return {"service": MODULE_NAME, "trusted": _state["trusted"], "readings": dict(_state)}
+    return {
+        "service": MODULE_NAME,
+        "trusted": _state["trusted"],
+        "readings": dict(_state)
+    }
 
 
 @app.post("/update")
@@ -57,4 +68,3 @@ def update(body: SensorsUpdate):
 
 if __name__ == "__main__":
     uvicorn.run(app, host=HOST, port=PORT)
-

@@ -8,27 +8,28 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime, Text
+    create_engine, Column, Integer, String,
+    Boolean, DateTime, Text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 5001))
+PORT = int(os.getenv('PORT', 5201))
 MODULE_NAME = os.getenv('MODULE_NAME', 'emergency_control_module')
+
+EMERGENCY_OPEN_URL = os.getenv(
+    'EMERGENCY_OPEN_URL', 'http://localhost:5202'
+)
+EMERGENCY_STOP_URL = os.getenv(
+    'EMERGENCY_STOP_URL', 'http://localhost:5203'
+)
+REQUEST_TIMEOUT = 5.0
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
 )
 logger = logging.getLogger(MODULE_NAME)
-
-EMERGENCY_OPEN_URL = os.getenv(
-    'EMERGENCY_OPEN_URL', 'http://localhost:5002'
-)
-EMERGENCY_STOP_URL = os.getenv(
-    'EMERGENCY_STOP_URL', 'http://localhost:5003'
-)
-REQUEST_TIMEOUT = 5.0
 
 DATABASE_URL = 'sqlite:///emergency_control.db'
 engine = create_engine(
@@ -40,7 +41,6 @@ Base = declarative_base()
 
 class EmergencyEventDB(Base):
     __tablename__ = 'emergency_events'
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     source = Column(String(100))
     reason = Column(String(200))
@@ -53,12 +53,26 @@ class EmergencyEventDB(Base):
 
 Base.metadata.create_all(engine)
 
-# Глобальное состояние
 state = {
     'emergency_active': False,
     'last_source': None,
     'last_reason': None,
     'total_events': 0
+}
+
+AUTHORIZED_SOURCES = {
+    'critical_battery_monitor',
+    'critical_situation_recognition',
+    'temperature_measurement_system',
+    'arm_force_limits_system',
+    'leg_force_limits_system',
+    'position_check_module',
+    'task_orchestrator',
+    'control_system',
+    'monitoring_system',
+    'doctor_tablet',
+    'operator',
+    'patient'
 }
 
 
@@ -67,7 +81,7 @@ class EmergencySignalRequest(BaseModel):
     reason: str = 'unspecified'
 
 
-app = FastAPI(title="Emergency Control Module", version="1.0")
+app = FastAPI(title="Emergency Control Module", version="1.1")
 
 
 @app.get('/health')
@@ -88,14 +102,14 @@ def get_status():
 
 @app.post('/emergency')
 def receive_emergency(body: EmergencySignalRequest):
-    """
-    Принимает сигнал аварийной остановки от любого источника.
-    Передаёт команды:
-      - emergency_open_module  → открыть кабину
-      - emergency_stop_module  → безопасная поза
-    """
+    if body.source not in AUTHORIZED_SOURCES:
+        raise HTTPException(
+            status_code=403,
+            detail=f'Source {body.source} not authorized'
+        )
+
     logger.critical(
-        f"EMERGENCY received from '{body.source}': {body.reason}"
+        f"EMERGENCY from '{body.source}': {body.reason}"
     )
 
     state['emergency_active'] = True
@@ -108,7 +122,7 @@ def receive_emergency(body: EmergencySignalRequest):
     open_error = None
     stop_error = None
 
-    # 1. Открыть кабину
+    # 1. Аварийное открытие кабины
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
             resp = c.post(
@@ -120,7 +134,7 @@ def receive_emergency(body: EmergencySignalRequest):
             )
             open_result = resp.status_code == 200
             logger.info(
-                f"Emergency open result: HTTP {resp.status_code}"
+                f"Emergency open: HTTP {resp.status_code}"
             )
     except Exception as e:
         open_error = str(e)
@@ -139,14 +153,13 @@ def receive_emergency(body: EmergencySignalRequest):
             )
             stop_result = resp.status_code == 200
             logger.info(
-                f"Emergency stop result: HTTP {resp.status_code}"
+                f"Safe pose: HTTP {resp.status_code}"
             )
     except Exception as e:
         stop_error = str(e)
         stop_result = False
-        logger.error(f"Emergency stop failed: {e}")
+        logger.error(f"Safe pose failed: {e}")
 
-    # Сохранить в БД
     session = SessionLocal()
     try:
         session.add(EmergencyEventDB(
@@ -179,7 +192,6 @@ def receive_emergency(body: EmergencySignalRequest):
 
 @app.post('/reset')
 def reset_emergency(source: str = 'operator'):
-    """Сбросить аварийный режим"""
     authorized = {'operator', 'doctor_tablet', 'rehab_center'}
     if source not in authorized:
         raise HTTPException(
@@ -212,8 +224,9 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             'stop_result': e.stop_result,
             'open_error': e.open_error,
             'stop_error': e.stop_error,
-            'created_at': e.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            if e.created_at else None
+            'created_at': e.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if e.created_at else None
         } for e in events]
     finally:
         session.close()
