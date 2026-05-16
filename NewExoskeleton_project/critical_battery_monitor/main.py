@@ -1,46 +1,31 @@
-# critical_battery_monitor/main.py
-import os
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 import random
 import time
 import threading
 from datetime import datetime, timezone
 
-import requests
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
-from sqlalchemy import (
-    create_engine, Column, Integer, Float,
-    Boolean, DateTime
-)
+from sqlalchemy import create_engine, Column, Integer, Float, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from kafka_bus import EventBus, TOPIC_EMERGENCY
+
 HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 5303))
-MODULE_NAME = os.getenv(
-    'MODULE_NAME', 'critical_battery_monitor'
-)
-EMERGENCY_CONTROL_URL = os.getenv(
-    'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
-)
-CRITICAL_THRESHOLD = float(
-    os.getenv('CRITICAL_BATTERY_THRESHOLD', '15.0')
-)
+PORT = int(os.getenv('PORT', 4002))
+MODULE_NAME = os.getenv('MODULE_NAME', 'critical_battery_monitor')
+CRITICAL_THRESHOLD = float(os.getenv('CRITICAL_BATTERY_THRESHOLD', '15.0'))
 CHECK_INTERVAL = float(os.getenv('CHECK_INTERVAL', '2.0'))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(MODULE_NAME)
 
-DATABASE_URL = os.getenv(
-    'DATABASE_URL', 'sqlite:///critical_battery_monitor.db'
-)
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///critical_battery_monitor.db')
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -48,17 +33,14 @@ Base = declarative_base()
 class BatteryAlertDB(Base):
     __tablename__ = 'battery_alerts'
     id = Column(Integer, primary_key=True)
-    simulated_soc = Column(Float)
-    actual_soc = Column(Float)
+    soc = Column(Float)
     alert_triggered = Column(Boolean)
-    stop_signaled = Column(Boolean)
-    created_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc)
-    )
+    kafka_published = Column(Boolean)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 Base.metadata.create_all(engine)
+bus = EventBus(client_id=MODULE_NAME)
 
 
 def read_critical_sensor() -> float:
@@ -72,17 +54,10 @@ _last_soc = read_critical_sensor()
 _alert_active = False
 
 
-def save_alert(
-    soc: float, alert: bool, signaled: bool
-):
+def save_alert(soc: float, alert: bool, published: bool):
     session = SessionLocal()
     try:
-        session.add(BatteryAlertDB(
-            simulated_soc=soc,
-            actual_soc=soc,
-            alert_triggered=alert,
-            stop_signaled=signaled
-        ))
+        session.add(BatteryAlertDB(soc=soc, alert_triggered=alert, kafka_published=published))
         session.commit()
     finally:
         session.close()
@@ -94,43 +69,19 @@ def monitor_loop():
         time.sleep(CHECK_INTERVAL)
         soc = read_critical_sensor()
         _last_soc = soc
-
         if soc <= CRITICAL_THRESHOLD and not _alert_active:
             _alert_active = True
-            logger.critical(
-                f"CRITICAL BATTERY: {soc:.1f}% "
-                f"<= {CRITICAL_THRESHOLD}%"
-            )
-            try:
-                resp = requests.post(
-                    f"{EMERGENCY_CONTROL_URL}/emergency",
-                    json={
-                        "source": MODULE_NAME,
-                        "reason": "critical_battery"
-                    },
-                    timeout=2.0
-                )
-                logger.info(
-                    f"Emergency signaled: {resp.status_code}"
-                )
-                save_alert(soc, True, True)
-            except Exception as e:
-                logger.error(
-                    f"Failed to signal emergency: {e}"
-                )
-                save_alert(soc, True, False)
-
+            logger.critical(f"CRITICAL BATTERY: {soc:.1f}%")
+            published = bus.publish(TOPIC_EMERGENCY, {'source': MODULE_NAME, 'reason': 'critical_battery', 'soc': round(soc, 2)})
+            save_alert(soc, True, published)
         elif soc > CRITICAL_THRESHOLD + 5 and _alert_active:
             _alert_active = False
-            logger.info(f"Battery recovered: {soc:.1f}%")
             save_alert(soc, False, False)
         else:
             save_alert(soc, False, False)
 
 
-threading.Thread(
-    target=monitor_loop, daemon=True
-).start()
+threading.Thread(target=monitor_loop, daemon=True).start()
 
 
 class BatteryStatus(BaseModel):
@@ -140,9 +91,7 @@ class BatteryStatus(BaseModel):
     last_check: str
 
 
-app = FastAPI(
-    title="Critical Battery Monitor", version="2.1"
-)
+app = FastAPI(title="Critical Battery Monitor", version="3.0")
 
 
 @app.get('/health')
@@ -152,63 +101,34 @@ def health():
 
 @app.get('/status', response_model=BatteryStatus)
 def status():
-    return BatteryStatus(
-        soc=round(_last_soc, 2),
-        critical_threshold=CRITICAL_THRESHOLD,
-        alert_active=_alert_active,
-        last_check=datetime.now(timezone.utc).isoformat()
-    )
+    return BatteryStatus(soc=round(_last_soc, 2), critical_threshold=CRITICAL_THRESHOLD,
+                         alert_active=_alert_active, last_check=datetime.now(timezone.utc).isoformat())
 
 
 @app.get('/raw_reading')
 def raw_reading():
-    return {
-        'soc': read_critical_sensor(),
-        'timestamp': datetime.now(timezone.utc).isoformat()
-    }
+    return {'soc': read_critical_sensor(), 'timestamp': datetime.now(timezone.utc).isoformat()}
 
 
 @app.post('/test_alert')
 def test_alert():
     global _alert_active
     _alert_active = True
-    try:
-        resp = requests.post(
-            f"{EMERGENCY_CONTROL_URL}/emergency",
-            json={
-                "source": MODULE_NAME,
-                "reason": "test_alert"
-            },
-            timeout=2.0
-        )
-        return {'ok': True, 'emergency_response': resp.status_code}
-    except Exception as e:
-        return {'ok': False, 'error': str(e)}
+    published = bus.publish(TOPIC_EMERGENCY, {'source': MODULE_NAME, 'reason': 'critical_battery_test', 'soc': _last_soc})
+    return {'ok': True, 'published': published}
 
 
 @app.get('/history')
-def history(limit: int = Query(100, ge=1, le=1000)):
+def history(limit: int = 100):
     session = SessionLocal()
     try:
-        alerts = (
-            session.query(BatteryAlertDB)
-            .order_by(BatteryAlertDB.created_at.desc())
-            .limit(limit).all()
-        )
-        return [{
-            'id': a.id,
-            'soc': a.simulated_soc,
-            'alert': a.alert_triggered,
-            'signaled': a.stop_signaled,
-            'created_at': a.created_at.isoformat()
-        } for a in alerts]
+        alerts = session.query(BatteryAlertDB).order_by(BatteryAlertDB.created_at.desc()).limit(limit).all()
+        return [{'id': a.id, 'soc': a.soc, 'alert': a.alert_triggered,
+                 'kafka_published': a.kafka_published, 'created_at': a.created_at.isoformat()} for a in alerts]
     finally:
         session.close()
 
 
 if __name__ == '__main__':
-    logger.info(
-        f"Starting {MODULE_NAME} on {HOST}:{PORT} "
-        f"| Threshold: {CRITICAL_THRESHOLD}%"
-    )
+    logger.info(f"Starting {MODULE_NAME} on {HOST}:{PORT}")
     uvicorn.run(app, host=HOST, port=PORT)
