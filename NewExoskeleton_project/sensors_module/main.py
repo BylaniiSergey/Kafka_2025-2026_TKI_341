@@ -1,5 +1,6 @@
-# sensors_module/main.py
-import os
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import random
 import logging
 import threading
@@ -9,19 +10,19 @@ from datetime import datetime
 import uvicorn
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
-from sqlalchemy import (
-    create_engine, Column, Integer, Float, String, DateTime
-)
+from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+from kafka_bus import EventBus, TOPIC_SENSORS_RAW
 
 HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 6003))
 MODULE_NAME = os.getenv('MODULE_NAME', 'sensors_module')
+PUBLISH_INTERVAL_S = float(os.getenv('PUBLISH_INTERVAL_S', '1.0'))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
+bus = EventBus(client_id=MODULE_NAME)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(MODULE_NAME)
 
 DATABASE_URL = 'sqlite:///sensors_module.db'
@@ -32,7 +33,6 @@ Base = declarative_base()
 
 class SensorReadingDB(Base):
     __tablename__ = 'sensor_readings'
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     joint_angle = Column(Float)
     joint_angular_velocity = Column(Float)
@@ -46,7 +46,6 @@ class SensorReadingDB(Base):
 
 Base.metadata.create_all(engine)
 
-# Текущие показания
 _angle = 45.0
 _velocity = 0.0
 _max_torque = 50.0
@@ -62,7 +61,22 @@ def simulate_sensors():
         _angle = max(0, min(150, _angle))
 
 
+def publish_readings_loop():
+    while True:
+        time.sleep(PUBLISH_INTERVAL_S)
+        bus.publish(TOPIC_SENSORS_RAW, {
+            'joint_angle': round(_angle, 2),
+            'joint_angular_velocity': round(_velocity, 2),
+            'torque': round(20.0 + random.random() * 10, 2),
+            'imu_roll': round(random.random() * 5 - 2.5, 3),
+            'imu_pitch': round(random.random() * 10 - 5, 3),
+            'imu_yaw': round(random.random() * 3 - 1.5, 3),
+            'motor_temp': round(35.0 + random.random() * 10, 1),
+        })
+
+
 threading.Thread(target=simulate_sensors, daemon=True).start()
+threading.Thread(target=publish_readings_loop, daemon=True).start()
 
 
 class SensorReadings(BaseModel):
@@ -84,8 +98,7 @@ def save_reading():
     session = SessionLocal()
     try:
         session.add(SensorReadingDB(
-            joint_angle=_angle,
-            joint_angular_velocity=_velocity,
+            joint_angle=_angle, joint_angular_velocity=_velocity,
             torque=20.0 + random.random() * 10,
             imu_roll=random.random() * 5 - 2.5,
             imu_pitch=random.random() * 10 - 5,
@@ -117,10 +130,6 @@ def get_readings():
         motor_temp=round(35.0 + random.random() * 10, 1),
         timestamp=datetime.now().isoformat()
     )
-    logger.debug(
-        f"Sensor readings: angle={readings.joint_angle}, "
-        f"temp={readings.motor_temp}"
-    )
     save_reading()
     return readings
 
@@ -129,7 +138,6 @@ def get_readings():
 def set_max_torque(body: MaxTorqueRequest):
     global _max_torque
     _max_torque = body.max_torque
-    logger.info(f"Max torque set to {_max_torque}")
     return {'status': 'ok', 'max_torque': _max_torque}
 
 
@@ -137,23 +145,11 @@ def set_max_torque(body: MaxTorqueRequest):
 def get_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
-        readings = (
-            session.query(SensorReadingDB)
-            .order_by(SensorReadingDB.created_at.desc())
-            .limit(limit).all()
-        )
-        return [{
-            'id': r.id,
-            'joint_angle': r.joint_angle,
-            'joint_angular_velocity': r.joint_angular_velocity,
-            'torque': r.torque,
-            'imu_roll': r.imu_roll,
-            'imu_pitch': r.imu_pitch,
-            'imu_yaw': r.imu_yaw,
-            'motor_temp': r.motor_temp,
-            'created_at': r.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                if r.created_at else None
-        } for r in readings]
+        readings = session.query(SensorReadingDB).order_by(SensorReadingDB.created_at.desc()).limit(limit).all()
+        return [{'id': r.id, 'joint_angle': r.joint_angle, 'joint_angular_velocity': r.joint_angular_velocity,
+                 'torque': r.torque, 'imu_roll': r.imu_roll, 'imu_pitch': r.imu_pitch,
+                 'imu_yaw': r.imu_yaw, 'motor_temp': r.motor_temp,
+                 'created_at': r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else None} for r in readings]
     finally:
         session.close()
 

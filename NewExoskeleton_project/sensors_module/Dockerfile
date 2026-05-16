@@ -1,7 +1,11 @@
 FROM python:3.11-slim
+
 WORKDIR /app
-COPY ../requirements.txt .
+
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 6003
+
+COPY kafka_bus.py .
+COPY sensors_module/ .
+
 CMD ["python", "main.py"]
