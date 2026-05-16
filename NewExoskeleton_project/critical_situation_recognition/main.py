@@ -1,25 +1,26 @@
-# critical_situation_recognition/main.py
+import sys
 import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 from datetime import datetime, timezone
 
-import httpx
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from pydantic import BaseModel
 from sqlalchemy import (
-    create_engine, Column, Integer, Float,
-    Boolean, String, DateTime
+    create_engine, Column, Integer, Float, String, Boolean, DateTime
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 5301))
-MODULE_NAME = os.getenv('MODULE_NAME', 'critical_situation_recognition')
-
-EMERGENCY_CONTROL_URL = os.getenv(
-    'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
+from kafka_bus import (
+    EventBus, TOPIC_EMERGENCY, TOPIC_SENSORS_VERIFIED
 )
+
+HOST = '0.0.0.0'
+PORT = int(os.getenv('PORT', 5102))
+MODULE_NAME = os.getenv('MODULE_NAME', 'critical_situation_recognition')
 
 THRESHOLDS = {
     'joint_angle': (0, 150),
@@ -27,7 +28,7 @@ THRESHOLDS = {
     'torque': (0, 80),
     'motor_temp': (0, 70),
     'imu_acceleration': (-20, 20),
-    'balance_deviation': (-15, 15)
+    'balance_deviation': (-15, 15),
 }
 
 logging.basicConfig(
@@ -48,20 +49,20 @@ Base = declarative_base()
 
 class SituationAlertDB(Base):
     __tablename__ = 'situation_alerts'
+
     id = Column(Integer, primary_key=True)
     metric = Column(String(50))
     value = Column(Float)
     threshold_min = Column(Float)
     threshold_max = Column(Float)
     critical = Column(Boolean)
-    stop_triggered = Column(Boolean)
-    created_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc)
-    )
+    transport = Column(String(20))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 Base.metadata.create_all(engine)
+
+bus = EventBus(client_id=MODULE_NAME)
 
 
 class TelemetryInput(BaseModel):
@@ -79,11 +80,7 @@ class AlertResponse(BaseModel):
     reason: str
 
 
-def save_alert(
-    metric: str, value: float,
-    t_min: float, t_max: float,
-    critical: bool, triggered: bool
-):
+def save_alert(metric, value, t_min, t_max, critical, transport):
     session = SessionLocal()
     try:
         session.add(SituationAlertDB(
@@ -92,144 +89,137 @@ def save_alert(
             threshold_min=t_min,
             threshold_max=t_max,
             critical=critical,
-            stop_triggered=triggered
+            transport=transport,
         ))
         session.commit()
     finally:
         session.close()
 
 
-async def trigger_emergency(reason: str) -> bool:
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(
-                f"{EMERGENCY_CONTROL_URL}/emergency",
-                json={
-                    "source": MODULE_NAME,
-                    "reason": reason
-                }
-            )
-        logger.critical(f"Emergency triggered: {reason}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to trigger emergency: {e}")
-        return False
+def evaluate_metric(metric: str, value: float, transport: str) -> dict:
+    if metric not in THRESHOLDS:
+        return {
+            'critical': False,
+            'reason': 'metric_not_configured',
+        }
+
+    t_min, t_max = THRESHOLDS[metric]
+    is_critical = not (t_min <= value <= t_max)
+
+    save_alert(metric, value, t_min, t_max, is_critical, transport)
+
+    if is_critical:
+        logger.critical(
+            "CRITICAL [%s]: %s=%s out of [%s, %s]",
+            transport, metric, value, t_min, t_max
+        )
+        bus.publish(TOPIC_EMERGENCY, {
+            'source': MODULE_NAME,
+            'reason': f'critical_{metric}',
+            'metric': metric,
+            'value': value,
+        })
+        return {
+            'critical': True,
+            'reason': 'threshold_exceeded',
+        }
+
+    return {
+        'critical': False,
+        'reason': 'within_limits',
+    }
 
 
-app = FastAPI(title="Critical Situation Recognition", version="2.2")
+def _on_sensor_message(payload: dict):
+    if not payload.get('trusted', True):
+        return
+
+    for metric in THRESHOLDS:
+        if metric in payload:
+            try:
+                value = float(payload[metric])
+            except (TypeError, ValueError):
+                continue
+
+            evaluate_metric(metric, value, transport='kafka')
+
+
+app = FastAPI(title="Critical Situation Recognition", version="3.1")
+
+
+@app.on_event('startup')
+def on_startup():
+    bus.subscribe(
+        TOPIC_SENSORS_VERIFIED,
+        handler=_on_sensor_message,
+        group_id='critical-situation',
+    )
+
+
+@app.on_event('shutdown')
+def on_shutdown():
+    bus.close()
 
 
 @app.get('/health')
 def health():
-    return {'status': 'healthy', 'module': MODULE_NAME}
+    return {'status': 'healthy', 'module': MODULE_NAME, 'port': PORT}
 
 
 @app.post('/analyze', response_model=AlertResponse)
-async def analyze(body: TelemetryInput):
+def analyze(body: TelemetryInput):
     if not body.sensor_trusted:
         return AlertResponse(
             critical=False,
-            action="ignore_untrusted",
+            action='ignore_untrusted',
             metric=body.metric,
             value=body.value,
-            reason="sensor_not_trusted"
+            reason='sensor_not_trusted',
         )
 
-    if body.metric not in THRESHOLDS:
-        return AlertResponse(
-            critical=False,
-            action="unknown_metric",
-            metric=body.metric,
-            value=body.value,
-            reason="metric_not_configured"
-        )
-
-    t_min, t_max = THRESHOLDS[body.metric]
-    is_critical = not (t_min <= body.value <= t_max)
-
-    save_alert(
-        body.metric, body.value,
-        t_min, t_max, is_critical, False
-    )
-
-    if is_critical:
-        logger.critical(
-            f"CRITICAL: {body.metric}={body.value} "
-            f"not in [{t_min}, {t_max}]"
-        )
-        triggered = await trigger_emergency(
-            f"critical_{body.metric}"
-        )
-        save_alert(
-            body.metric, body.value,
-            t_min, t_max, True, triggered
-        )
-        return AlertResponse(
-            critical=True,
-            action=(
-                "emergency_stop_triggered"
-                if triggered else "emergency_stop_failed"
-            ),
-            metric=body.metric,
-            value=body.value,
-            reason="threshold_exceeded"
-        )
+    result = evaluate_metric(body.metric, body.value, transport='http')
 
     return AlertResponse(
-        critical=False,
-        action="continue",
+        critical=result['critical'],
+        action='emergency_published' if result['critical'] else 'continue',
         metric=body.metric,
         value=body.value,
-        reason="within_limits"
+        reason=result['reason'],
     )
-
-
-@app.post('/batch_analyze')
-async def batch_analyze(metrics: list[TelemetryInput]):
-    results = []
-    any_critical = False
-    for m in metrics:
-        res = await analyze(m)
-        results.append(res)
-        if res.critical:
-            any_critical = True
-    return {
-        'results': results,
-        'any_critical': any_critical
-    }
 
 
 @app.get('/status')
 def status():
     return {
         'service': MODULE_NAME,
+        'port': PORT,
         'thresholds': THRESHOLDS,
-        'emergency_url': EMERGENCY_CONTROL_URL,
-        'last_check': datetime.now(timezone.utc).isoformat()
+        'last_check': datetime.now(timezone.utc).isoformat(),
     }
 
 
 @app.get('/history')
-def history(limit: int = Query(100, ge=1, le=1000)):
+def history(limit: int = 100):
     session = SessionLocal()
     try:
         alerts = (
             session.query(SituationAlertDB)
             .order_by(SituationAlertDB.created_at.desc())
-            .limit(limit).all()
+            .limit(limit)
+            .all()
         )
         return [{
             'id': a.id,
             'metric': a.metric,
             'value': a.value,
             'critical': a.critical,
-            'triggered': a.stop_triggered,
-            'created_at': a.created_at.isoformat()
+            'transport': a.transport,
+            'created_at': a.created_at.isoformat(),
         } for a in alerts]
     finally:
         session.close()
 
 
 if __name__ == '__main__':
-    logger.info(f"Starting {MODULE_NAME} on {HOST}:{PORT}")
+    logger.info("Starting %s on %s:%s", MODULE_NAME, HOST, PORT)
     uvicorn.run(app, host=HOST, port=PORT)

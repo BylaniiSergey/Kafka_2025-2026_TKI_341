@@ -1,4 +1,3 @@
-# leg_movement_system/main.py
 import os
 import logging
 from datetime import datetime
@@ -9,31 +8,22 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import (
-    create_engine, Column, Integer, Float,
-    String, DateTime
-)
+from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 9002))
+PORT = 9002
 MODULE_NAME = os.getenv('MODULE_NAME', 'leg_movement_system')
 
-KNEE_SYSTEM_URL = os.getenv(
-    'KNEE_SYSTEM_URL', 'http://localhost:9003'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
 )
-TRACK_SYSTEM_URL = os.getenv(
-    'TRACK_SYSTEM_URL', 'http://localhost:9004'
-)
-LEG_FORCE_URL = os.getenv(
-    'LEG_FORCE_URL', 'http://localhost:9006'
-)
-GNSS_URL = os.getenv(
-    'GNSS_URL', 'http://localhost:5205'
-)
-INS_URL = os.getenv(
-    'INS_URL', 'http://localhost:5206'
-)
+logger = logging.getLogger(MODULE_NAME)
+
+KNEE_SYSTEM_URL = os.getenv('KNEE_SYSTEM_URL', 'http://localhost:9003')
+TRACK_SYSTEM_URL = os.getenv('TRACK_SYSTEM_URL', 'http://localhost:9004')
+LEG_FORCE_URL = os.getenv('LEG_FORCE_URL', 'http://localhost:9006')
 REQUEST_TIMEOUT = 5.0
 
 INTENT_MAPPING = {
@@ -52,28 +42,15 @@ INTENT_MAPPING = {
     'brake': ['track', 'knee']
 }
 
-NAV_INTENTS = {
-    'move_forward', 'move_backward',
-    'turn_left', 'turn_right',
-    'pivot_left', 'pivot_right'
-}
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger(MODULE_NAME)
-
 DATABASE_URL = 'sqlite:///leg_movement.db'
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
 class MovementHistoryDB(Base):
     __tablename__ = 'movement_history'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     leg = Column(String(20))
     intent = Column(String(50))
@@ -111,7 +88,7 @@ class ExecuteRequest(BaseModel):
     speed_modifier: float = 1.0
 
 
-app = FastAPI(title="Leg Movement System", version="2.2")
+app = FastAPI(title="Leg Movement System", version="2.0")
 
 
 def get_system_url(system: str) -> Optional[str]:
@@ -121,20 +98,6 @@ def get_system_url(system: str) -> Optional[str]:
     }.get(system)
 
 
-def notify_navigation(intent: str):
-    for nav_url in [GNSS_URL, INS_URL]:
-        try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-                c.post(
-                    f'{nav_url}/movement_event',
-                    json={'intent': intent, 'steps': 1}
-                )
-        except Exception as e:
-            logger.error(
-                f"Navigation notify failed ({nav_url}): {e}"
-            )
-
-
 @app.post('/execute')
 def execute_movement(body: ExecuteRequest):
     if body.intent not in INTENT_MAPPING:
@@ -142,6 +105,7 @@ def execute_movement(body: ExecuteRequest):
             status_code=400,
             detail=f'Unknown intent: {body.intent}'
         )
+
     if system_state['emergency_stop']:
         raise HTTPException(
             status_code=403,
@@ -153,7 +117,7 @@ def execute_movement(body: ExecuteRequest):
     system_state['current_intent'] = body.intent
 
     logger.info(
-        f"Leg movement: leg={body.leg}, "
+        f"Executing leg movement: leg={body.leg}, "
         f"intent={body.intent}, systems={systems}"
     )
 
@@ -162,21 +126,31 @@ def execute_movement(body: ExecuteRequest):
 
     for system in systems:
         url = get_system_url(system)
+        if not url:
+            errors.append(f"Unknown target system: {system}")
+            results[system] = {'error': 'unknown target system'}
+            continue
+
         command = {
             'leg': body.leg,
             'intent': body.intent,
             'strength': body.strength,
             'speed_modifier': body.speed_modifier
         }
+
         try:
             with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
                 resp = client.post(f'{url}/move', json=command)
-                results[system] = (
-                    resp.json() if resp.status_code == 200 else {}
-                )
-                logger.info(
-                    f"System {system}: {resp.status_code}"
-                )
+                if resp.status_code == 200:
+                    results[system] = resp.json()
+                else:
+                    results[system] = {
+                        'error': f'HTTP {resp.status_code}'
+                    }
+                    errors.append(
+                        f"System {system} returned HTTP {resp.status_code}"
+                    )
+                logger.info("System %s: %s", system, resp.status_code)
         except Exception as e:
             error_msg = f"System {system} error: {str(e)}"
             logger.error(error_msg)
@@ -185,7 +159,8 @@ def execute_movement(body: ExecuteRequest):
 
     if body.intent in [
         'move_forward', 'move_backward',
-        'turn_left', 'turn_right'
+        'turn_left', 'turn_right',
+        'pivot_left', 'pivot_right'
     ]:
         system_state['status'] = SystemStatus.DRIVING
     elif body.intent == 'stand_up':
@@ -193,12 +168,9 @@ def execute_movement(body: ExecuteRequest):
     else:
         system_state['status'] = SystemStatus.IDLE
 
-    if body.intent in NAV_INTENTS and not errors:
-        notify_navigation(body.intent)
-
     session = SessionLocal()
     try:
-        session.add(MovementHistoryDB(
+        history = MovementHistoryDB(
             leg=body.leg,
             intent=body.intent,
             strength=body.strength,
@@ -206,16 +178,18 @@ def execute_movement(body: ExecuteRequest):
             systems_targeted=','.join(systems),
             success='true' if not errors else 'partial',
             error_message='; '.join(errors) if errors else None
-        ))
+        )
+        session.add(history)
         session.commit()
     finally:
         session.close()
 
     return {
-        'success': True,
+        'success': len(errors) == 0,
         'intent': body.intent,
         'systems_called': systems,
-        'results': results
+        'results': results,
+        'errors': errors
     }
 
 
@@ -227,10 +201,10 @@ def emergency_stop():
 
     for url in [KNEE_SYSTEM_URL, TRACK_SYSTEM_URL, LEG_FORCE_URL]:
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-                c.post(f'{url}/emergency_stop')
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+                client.post(f'{url}/emergency_stop')
         except Exception as e:
-            logger.error(f"Emergency stop failed: {e}")
+            logger.error("Emergency stop failed for %s: %s", url, e)
 
     return {'message': 'Emergency stop activated'}
 
@@ -244,10 +218,10 @@ def reset():
 
     for url in [KNEE_SYSTEM_URL, TRACK_SYSTEM_URL, LEG_FORCE_URL]:
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-                c.post(f'{url}/reset')
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+                client.post(f'{url}/reset')
         except Exception as e:
-            logger.error(f"Reset failed: {e}")
+            logger.error("Reset failed for %s: %s", url, e)
 
     return {'message': 'All systems reset'}
 
@@ -268,7 +242,8 @@ def get_movement_history(limit: int = Query(100, ge=1, le=1000)):
         logs = (
             session.query(MovementHistoryDB)
             .order_by(MovementHistoryDB.created_at.desc())
-            .limit(limit).all()
+            .limit(limit)
+            .all()
         )
         return [{
             'id': l.id,
@@ -279,9 +254,8 @@ def get_movement_history(limit: int = Query(100, ge=1, le=1000)):
             'systems_targeted': l.systems_targeted,
             'success': l.success,
             'error_message': l.error_message,
-            'created_at': l.created_at.strftime(
-                '%Y-%m-%d %H:%M:%S'
-            ) if l.created_at else None
+            'created_at': l.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                if l.created_at else None
         } for l in logs]
     finally:
         session.close()
@@ -289,7 +263,11 @@ def get_movement_history(limit: int = Query(100, ge=1, le=1000)):
 
 @app.get('/health')
 def health_check():
-    return {'status': 'healthy', 'module': MODULE_NAME}
+    return {
+        'status': 'healthy',
+        'module': MODULE_NAME,
+        'port': PORT
+    }
 
 
 if __name__ == '__main__':

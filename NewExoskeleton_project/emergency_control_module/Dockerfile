@@ -6,8 +6,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY kafka_bus.py .
-COPY leg_force_limits_system/ .
-
-EXPOSE 9105
+COPY emergency_control_module/ .
 
 CMD ["python", "main.py"]

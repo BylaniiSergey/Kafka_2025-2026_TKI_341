@@ -7,16 +7,13 @@ import uvicorn
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from sqlalchemy import (
-    create_engine, Column, Integer, String,
-    Boolean, DateTime, Text
+    create_engine, Column, Integer, String, Boolean, DateTime, Text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 5202))
-MODULE_NAME = os.getenv(
-    'MODULE_NAME', 'emergency_open_module'
-)
+PORT = int(os.getenv('PORT', 5002))
+MODULE_NAME = os.getenv('MODULE_NAME', 'emergency_open_module')
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +31,7 @@ Base = declarative_base()
 
 class OpenEventDB(Base):
     __tablename__ = 'open_events'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     source = Column(String(100))
     reason = Column(Text)
@@ -55,7 +53,7 @@ class OpenRequest(BaseModel):
     reason: str = 'emergency'
 
 
-app = FastAPI(title="Emergency Open Module", version="1.1")
+app = FastAPI(title="Emergency Open Module", version="1.0")
 
 
 @app.get('/health')
@@ -75,10 +73,16 @@ def get_status():
 
 @app.post('/open')
 def open_cabin(body: OpenRequest):
+    """
+    Аварийное открытие кабины экзоскелета.
+    Выполняется БЕЗУСЛОВНО — без проверки состояния приводов.
+    Активируется только от emergency_control_module.
+    """
     logger.critical(
         f"EMERGENCY CABIN OPEN: source='{body.source}', "
         f"reason='{body.reason}'"
     )
+
     cabin_state['is_open'] = True
     cabin_state['total_openings'] += 1
     cabin_state['last_open_reason'] = body.reason
@@ -105,6 +109,7 @@ def open_cabin(body: OpenRequest):
 
 @app.post('/close')
 def close_cabin(source: str = 'operator'):
+    """Закрыть кабину (только после устранения аварии)"""
     cabin_state['is_open'] = False
     logger.info(f"Cabin closed by {source}")
     return {
@@ -128,9 +133,8 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             'source': e.source,
             'reason': e.reason,
             'cabin_opened': e.cabin_opened,
-            'created_at': e.created_at.strftime(
-                '%Y-%m-%d %H:%M:%S'
-            ) if e.created_at else None
+            'created_at': e.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            if e.created_at else None
         } for e in events]
     finally:
         session.close()
