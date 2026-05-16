@@ -2,11 +2,10 @@
 import os
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from sqlalchemy import (
     create_engine, Column, Integer, Float,
@@ -16,9 +15,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 5301))
-MODULE_NAME = os.getenv(
-    'MODULE_NAME', 'critical_situation_recognition'
-)
+MODULE_NAME = os.getenv('MODULE_NAME', 'critical_situation_recognition')
 
 EMERGENCY_CONTROL_URL = os.getenv(
     'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
@@ -90,9 +87,12 @@ def save_alert(
     session = SessionLocal()
     try:
         session.add(SituationAlertDB(
-            metric=metric, value=value,
-            threshold_min=t_min, threshold_max=t_max,
-            critical=critical, stop_triggered=triggered
+            metric=metric,
+            value=value,
+            threshold_min=t_min,
+            threshold_max=t_max,
+            critical=critical,
+            stop_triggered=triggered
         ))
         session.commit()
     finally:
@@ -109,18 +109,14 @@ async def trigger_emergency(reason: str) -> bool:
                     "reason": reason
                 }
             )
-        logger.critical(
-            f"Emergency triggered: {reason}"
-        )
+        logger.critical(f"Emergency triggered: {reason}")
         return True
     except Exception as e:
         logger.error(f"Failed to trigger emergency: {e}")
         return False
 
 
-app = FastAPI(
-    title="Critical Situation Recognition", version="2.1"
-)
+app = FastAPI(title="Critical Situation Recognition", version="2.2")
 
 
 @app.get('/health')
@@ -172,8 +168,7 @@ async def analyze(body: TelemetryInput):
             critical=True,
             action=(
                 "emergency_stop_triggered"
-                if triggered
-                else "emergency_stop_failed"
+                if triggered else "emergency_stop_failed"
             ),
             metric=body.metric,
             value=body.value,

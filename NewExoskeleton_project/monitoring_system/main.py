@@ -6,7 +6,6 @@ from datetime import datetime
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
 from sqlalchemy import (
     create_engine, Column, Integer, Float,
     Boolean, String, DateTime, Text
@@ -32,6 +31,9 @@ SENSOR_VERIFICATION_URL = os.getenv(
 CRITICAL_SITUATION_URL = os.getenv(
     'CRITICAL_SITUATION_URL', 'http://localhost:5301'
 )
+EMERGENCY_CONTROL_URL = os.getenv(
+    'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
+)
 REQUEST_TIMEOUT = 5.0
 
 logging.basicConfig(
@@ -50,6 +52,7 @@ Base = declarative_base()
 
 class TelemetryLogDB(Base):
     __tablename__ = 'telemetry_log'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     joint_angle = Column(Float)
     torque = Column(Float)
@@ -62,6 +65,7 @@ class TelemetryLogDB(Base):
 
 class AlarmLogDB(Base):
     __tablename__ = 'alarm_log'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     alarm_type = Column(String(100))
     value = Column(Float, nullable=True)
@@ -72,9 +76,7 @@ class AlarmLogDB(Base):
 Base.metadata.create_all(engine)
 
 
-def save_telemetry(
-    data: dict, alarms: list, sensor_trusted: bool
-):
+def save_telemetry(data: dict, alarms: list, sensor_trusted: bool):
     session = SessionLocal()
     try:
         session.add(TelemetryLogDB(
@@ -107,7 +109,24 @@ def save_alarm(
         session.close()
 
 
-app = FastAPI(title="Monitoring System", version="2.1")
+def forward_emergency(reason: str):
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+            c.post(
+                f'{EMERGENCY_CONTROL_URL}/emergency',
+                json={
+                    'source': MODULE_NAME,
+                    'reason': reason
+                }
+            )
+        logger.critical(
+            f"Emergency forwarded to emergency_control: {reason}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to forward emergency: {e}")
+
+
+app = FastAPI(title="Monitoring System", version="2.2")
 
 
 @app.get('/health')
@@ -117,6 +136,14 @@ def health():
 
 @app.get('/telemetry')
 def get_telemetry():
+    """
+    monitoring:
+      - sensors_module/readings
+      - battery_controller/status
+      - sensor_verification/auto_verify
+      - critical_situation_recognition/batch_analyze
+      - comms_module/alarm
+    """
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
             sensors_resp = c.get(f'{SENSORS_URL}/readings')
@@ -125,10 +152,13 @@ def get_telemetry():
         sensor_data = sensors_resp.json()
         battery_data = battery_resp.json()
 
-        telemetry = {**sensor_data, 'battery': battery_data}
+        telemetry = {
+            **sensor_data,
+            'battery': battery_data
+        }
         alarms = []
 
-        # Верификация датчиков
+        # 1. Верификация датчиков
         sensor_trusted = True
         try:
             with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
@@ -147,7 +177,7 @@ def get_telemetry():
             save_alarm('SENSOR_VERIFICATION_FAILED')
             logger.warning("ALARM: SENSOR_VERIFICATION_FAILED")
 
-        # Стандартные аларм-проверки
+        # 2. Локальные алармы мониторинга
         if sensor_data.get('joint_angle', 0) > 120:
             alarms.append('HYPEREXTENSION')
             save_alarm(
@@ -161,7 +191,10 @@ def get_telemetry():
 
         if battery_data.get('soc', 100) < 10:
             alarms.append('BATTERY_LOW')
-            save_alarm('BATTERY_LOW', value=battery_data['soc'])
+            save_alarm(
+                'BATTERY_LOW',
+                value=battery_data['soc']
+            )
             logger.warning(
                 f"ALARM: BATTERY_LOW soc={battery_data['soc']}"
             )
@@ -177,7 +210,7 @@ def get_telemetry():
                 f"temp={sensor_data['motor_temp']}"
             )
 
-        # Отправка метрик в critical_situation_recognition
+        # 3. Передача метрик в модуль распознавания критической ситуации
         try:
             metrics = [
                 {
@@ -209,7 +242,7 @@ def get_telemetry():
                 f"Critical situation analysis failed: {e}"
             )
 
-        # Отправка алармов в comms
+        # 4. Передача алармов врачам
         if alarms:
             try:
                 with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
@@ -218,15 +251,15 @@ def get_telemetry():
                         json={'alarms': alarms}
                     )
                 for alarm in alarms:
-                    save_alarm(alarm, sent_to_comms=True)
+                    save_alarm(alarm, sent=True)
                 logger.info(f"Alarms sent to comms: {alarms}")
             except Exception as e:
                 logger.error(f"Failed to send alarms: {e}")
 
         telemetry['alarms'] = alarms
         telemetry['sensor_trusted'] = sensor_trusted
-        save_telemetry(telemetry, alarms, sensor_trusted)
 
+        save_telemetry(telemetry, alarms, sensor_trusted)
         return telemetry
 
     except Exception as e:
@@ -236,15 +269,21 @@ def get_telemetry():
 
 @app.post('/emergency_stop')
 def emergency_stop():
+    """
+    Экстренная остановка, инициированная через monitoring.
+    Теперь она реально маршрутизируется в emergency_control_module.
+    """
     logger.critical("Emergency stop triggered by monitoring")
     save_alarm('EMERGENCY_STOP_MONITORING')
-    return {'ok': True, 'message': 'Emergency stop triggered'}
+    forward_emergency('monitoring_emergency_stop')
+    return {
+        'ok': True,
+        'message': 'Emergency stop forwarded'
+    }
 
 
 @app.get('/telemetry_history')
-def get_telemetry_history(
-    limit: int = Query(100, ge=1, le=1000)
-):
+def get_telemetry_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
         logs = (
@@ -269,9 +308,7 @@ def get_telemetry_history(
 
 
 @app.get('/alarm_history')
-def get_alarm_history(
-    limit: int = Query(100, ge=1, le=1000)
-):
+def get_alarm_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
         alarms = (

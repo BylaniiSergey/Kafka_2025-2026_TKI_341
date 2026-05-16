@@ -15,9 +15,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 5302))
-MODULE_NAME = os.getenv(
-    'MODULE_NAME', 'sensor_verification'
-)
+MODULE_NAME = os.getenv('MODULE_NAME', 'sensor_verification')
 
 SENSORS_URL = os.getenv(
     'SENSORS_URL', 'http://localhost:6003/readings'
@@ -95,7 +93,7 @@ def save_log(
         session.close()
 
 
-app = FastAPI(title="Sensor Verification", version="2.1")
+app = FastAPI(title="Sensor Verification", version="2.2")
 
 
 @app.get('/health')
@@ -105,26 +103,28 @@ def health():
 
 @app.post('/verify', response_model=VerificationResponse)
 def verify(body: VerificationRequest):
-    deviation = abs(
-        body.regular_value - body.critical_value
-    )
+    deviation = abs(body.regular_value - body.critical_value)
     passed = deviation <= body.tolerance
     forwarded = body.critical_value if passed else 0.0
     reason = (
         "ok" if passed
-        else f"deviation_{deviation:.2f}_exceeds_"
-             f"{body.tolerance}"
+        else f"deviation_{deviation:.2f}_exceeds_{body.tolerance}"
     )
+
     save_log(
-        body.metric, body.regular_value,
-        body.critical_value, deviation,
-        passed, passed
+        body.metric,
+        body.regular_value,
+        body.critical_value,
+        deviation,
+        passed,
+        passed
     )
+
     logger.info(
         f"Verify {body.metric}: "
-        f"{'PASS' if passed else 'FAIL'} | "
-        f"dev={deviation:.2f}"
+        f"{'PASS' if passed else 'FAIL'} | dev={deviation:.2f}"
     )
+
     return VerificationResponse(
         metric=body.metric,
         passed=passed,
@@ -140,24 +140,20 @@ async def auto_verify(metric: str = "joint_angle"):
         try:
             reg_resp = await client.get(SENSORS_URL)
             crit_resp = await client.get(CRITICAL_SENSORS_URL)
-            if (
-                reg_resp.status_code != 200
-                or crit_resp.status_code != 200
-            ):
-                raise HTTPException(
-                    503, "Failed to fetch sensor data"
-                )
+
+            if reg_resp.status_code != 200 or crit_resp.status_code != 200:
+                raise HTTPException(503, "Failed to fetch sensor data")
 
             reg_data = reg_resp.json()
             crit_data = crit_resp.json()
 
             reg_val = reg_data.get(metric)
             crit_val = crit_data.get(metric)
+
             if reg_val is None or crit_val is None:
                 raise HTTPException(
                     400,
-                    f"Metric '{metric}' not found "
-                    f"in one of sources"
+                    f"Metric '{metric}' not found in one of sources"
                 )
 
             return verify(VerificationRequest(
@@ -165,9 +161,11 @@ async def auto_verify(metric: str = "joint_angle"):
                 regular_value=reg_val,
                 critical_value=crit_val
             ))
+
         except httpx.RequestError as e:
             raise HTTPException(
-                503, f"Sensor fetch failed: {str(e)}"
+                503,
+                f"Sensor fetch failed: {str(e)}"
             )
 
 

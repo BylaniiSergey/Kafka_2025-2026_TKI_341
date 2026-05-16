@@ -111,7 +111,7 @@ class ExecuteRequest(BaseModel):
     speed_modifier: float = 1.0
 
 
-app = FastAPI(title="Leg Movement System", version="2.1")
+app = FastAPI(title="Leg Movement System", version="2.2")
 
 
 def get_system_url(system: str) -> Optional[str]:
@@ -169,16 +169,10 @@ def execute_movement(body: ExecuteRequest):
             'speed_modifier': body.speed_modifier
         }
         try:
-            with httpx.Client(
-                timeout=REQUEST_TIMEOUT
-            ) as client:
-                resp = client.post(
-                    f'{url}/move', json=command
-                )
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+                resp = client.post(f'{url}/move', json=command)
                 results[system] = (
-                    resp.json()
-                    if resp.status_code == 200
-                    else {}
+                    resp.json() if resp.status_code == 200 else {}
                 )
                 logger.info(
                     f"System {system}: {resp.status_code}"
@@ -189,15 +183,16 @@ def execute_movement(body: ExecuteRequest):
             errors.append(error_msg)
             results[system] = {'error': str(e)}
 
-    if body.intent in ['move_forward', 'move_backward',
-                        'turn_left', 'turn_right']:
+    if body.intent in [
+        'move_forward', 'move_backward',
+        'turn_left', 'turn_right'
+    ]:
         system_state['status'] = SystemStatus.DRIVING
     elif body.intent == 'stand_up':
         system_state['status'] = SystemStatus.STANDING
     else:
         system_state['status'] = SystemStatus.IDLE
 
-    # Уведомление навигационных модулей
     if body.intent in NAV_INTENTS and not errors:
         notify_navigation(body.intent)
 
@@ -210,9 +205,7 @@ def execute_movement(body: ExecuteRequest):
             speed_modifier=body.speed_modifier,
             systems_targeted=','.join(systems),
             success='true' if not errors else 'partial',
-            error_message=(
-                '; '.join(errors) if errors else None
-            )
+            error_message='; '.join(errors) if errors else None
         ))
         session.commit()
     finally:
@@ -269,9 +262,7 @@ def get_status():
 
 
 @app.get('/movement_history')
-def get_movement_history(
-    limit: int = Query(100, ge=1, le=1000)
-):
+def get_movement_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
         logs = (

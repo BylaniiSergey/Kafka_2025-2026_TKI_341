@@ -23,11 +23,11 @@ MODULE_NAME = os.getenv('MODULE_NAME', 'comms_module')
 MONITORING_URL = os.getenv(
     'MONITORING_URL', 'http://localhost:6002'
 )
-SENSORS_URL = os.getenv(
-    'SENSORS_URL', 'http://localhost:6003'
-)
 CRYPTO_URL = os.getenv(
     'CRYPTO_URL', 'http://localhost:5102'
+)
+TASK_ORCHESTRATOR_URL = os.getenv(
+    'TASK_ORCHESTRATOR_URL', 'http://localhost:5000'
 )
 REQUEST_TIMEOUT = 5.0
 
@@ -47,6 +47,7 @@ Base = declarative_base()
 
 class CommsLogDB(Base):
     __tablename__ = 'comms_log'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_type = Column(String(50))
     source = Column(String(50), nullable=True)
@@ -62,8 +63,10 @@ active_connections: Dict[str, WebSocket] = {}
 
 
 def save_log(
-    event_type: str, source: str = None,
-    data: str = None, sent: bool = False,
+    event_type: str,
+    source: str = None,
+    data: str = None,
+    sent: bool = False,
     encrypted: bool = False
 ):
     session = SessionLocal()
@@ -80,35 +83,34 @@ def save_log(
         session.close()
 
 
-async def encrypt_payload(
-    payload: dict, source: str, target: str
-) -> dict:
+async def encrypt_payload(payload: dict, target: str) -> dict:
+    """
+    Шифрует данные перед отправкой врачу.
+    Без успешного шифрования телеметрия не отправляется.
+    """
     try:
-        async with httpx.AsyncClient(
-            timeout=REQUEST_TIMEOUT
-        ) as c:
-            resp = await c.post(
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(
                 f'{CRYPTO_URL}/encrypt',
                 json={
-                    'plaintext': json.dumps(
-                        payload, ensure_ascii=False
-                    ),
-                    'source': source,
+                    'plaintext': json.dumps(payload, ensure_ascii=False),
+                    'source': MODULE_NAME,
                     'target': target
                 }
             )
-            if resp.status_code == 200:
-                return {
-                    'encrypted': True,
-                    **resp.json()
-                }
+            resp.raise_for_status()
+            return {
+                'ok': True,
+                'encrypted': True,
+                **resp.json()
+            }
     except Exception as e:
-        logger.error(f"Encryption failed: {e}")
-
-    return {
-        'encrypted': False,
-        'plaintext': json.dumps(payload, ensure_ascii=False)
-    }
+        logger.error(f"Encryption failed for {target}: {e}")
+        return {
+            'ok': False,
+            'encrypted': False,
+            'error': str(e)
+        }
 
 
 class AlarmRequest(BaseModel):
@@ -117,11 +119,12 @@ class AlarmRequest(BaseModel):
 
 class CommandRequest(BaseModel):
     type: str
-    source: str = 'doctor'
+    source: str = 'doctor_tablet'
     data: dict = {}
+    verification_token: str = ""
 
 
-app = FastAPI(title="Comms Module", version="2.1")
+app = FastAPI(title="Comms Module", version="2.2")
 
 
 @app.get('/health')
@@ -143,13 +146,15 @@ def status():
 
 
 @app.websocket('/doctor/{doctor_id}')
-async def doctor_endpoint(
-    websocket: WebSocket, doctor_id: str
-):
+async def doctor_endpoint(websocket: WebSocket, doctor_id: str):
+    """
+    Врач подключается для получения телеметрии.
+    Телеметрия уходит только в зашифрованном виде.
+    """
     await websocket.accept()
-    conn_key = f"doctor_{doctor_id}"
+    conn_key = f'doctor_{doctor_id}'
     active_connections[conn_key] = websocket
-    logger.info(f"Doctor {doctor_id} connected via WebSocket")
+    logger.info(f"Doctor {doctor_id} connected")
     save_log('ws_connect', source=doctor_id)
 
     try:
@@ -161,20 +166,39 @@ async def doctor_endpoint(
                     telemetry_resp = await client.get(
                         f'{MONITORING_URL}/telemetry'
                     )
-                    telemetry_data = telemetry_resp.json()
+                    telemetry_resp.raise_for_status()
+                    telemetry = telemetry_resp.json()
 
                 encrypted = await encrypt_payload(
-                    telemetry_data,
-                    source=MODULE_NAME,
+                    telemetry,
                     target=conn_key
                 )
-                await websocket.send_json({
-                    'type': 'telemetry',
-                    **encrypted
-                })
+
+                if encrypted.get('ok'):
+                    await websocket.send_json({
+                        'type': 'encrypted_telemetry',
+                        'ciphertext': encrypted['ciphertext'],
+                        'signature': encrypted['signature'],
+                        'timestamp': encrypted['timestamp']
+                    })
+                    save_log(
+                        'telemetry_sent',
+                        source=doctor_id,
+                        sent=True,
+                        encrypted=True
+                    )
+                else:
+                    await websocket.send_json({
+                        'type': 'error',
+                        'error': 'encryption_failed',
+                        'detail': encrypted.get('error')
+                    })
 
             except Exception as e:
-                await websocket.send_json({'error': str(e)})
+                await websocket.send_json({
+                    'type': 'error',
+                    'error': str(e)
+                })
 
             await asyncio.sleep(1)
 
@@ -182,44 +206,60 @@ async def doctor_endpoint(
         logger.info(f"Doctor {doctor_id} disconnected")
         save_log('ws_disconnect', source=doctor_id)
     finally:
-        if conn_key in active_connections:
-            del active_connections[conn_key]
+        active_connections.pop(conn_key, None)
 
 
 @app.post('/alarm')
 async def receive_alarm(body: AlarmRequest):
+    """
+    Получить аларм от monitoring_system и разослать врачам.
+    Алармы тоже шифруются.
+    """
     logger.warning(f"Alarm received: {body.alarms}")
     save_log('alarm', data=str(body.alarms))
 
     sent_count = 0
-    for conn_key, websocket in list(
-        active_connections.items()
-    ):
+
+    for conn_key, websocket in list(active_connections.items()):
         try:
             payload = {
                 'type': 'alarm',
                 'alarms': body.alarms,
                 'timestamp': datetime.now().isoformat()
             }
+
             encrypted = await encrypt_payload(
                 payload,
-                source=MODULE_NAME,
                 target=conn_key
             )
+
+            if not encrypted.get('ok'):
+                logger.error(
+                    f"Failed to encrypt alarm for {conn_key}: "
+                    f"{encrypted.get('error')}"
+                )
+                continue
+
             await websocket.send_json({
                 'type': 'encrypted_alarm',
-                **encrypted
+                'ciphertext': encrypted['ciphertext'],
+                'signature': encrypted['signature'],
+                'timestamp': encrypted['timestamp']
             })
             sent_count += 1
+
         except Exception as e:
             logger.error(
                 f"Failed to send alarm to {conn_key}: {e}"
             )
 
     save_log(
-        'alarm_sent', data=str(body.alarms),
-        sent=True, encrypted=True
+        'alarm_sent',
+        data=str(body.alarms),
+        sent=True,
+        encrypted=True
     )
+
     return {
         'status': 'alarm_sent',
         'sent_to': sent_count,
@@ -229,47 +269,46 @@ async def receive_alarm(body: AlarmRequest):
 
 @app.post('/command')
 async def command_from_doctor(body: CommandRequest):
+    """
+    Команда врача больше не маршрутизируется напрямую в monitoring/sensors.
+    Она уходит в task_orchestrator, который уже сам:
+      - вызывает command_verification
+      - решает emergency/control маршрут
+    """
     logger.info(
-        f"Command from {body.source}: type={body.type}"
+        f"Doctor command: source={body.source}, type={body.type}"
     )
     save_log(
-        'command', source=body.source,
-        data=str(body.type)
+        'command',
+        source=body.source,
+        data=str({
+            'type': body.type,
+            'data': body.data
+        })
     )
 
     try:
-        async with httpx.AsyncClient(
-            timeout=REQUEST_TIMEOUT
-        ) as c:
-            if body.type == 'emergency_stop':
-                await c.post(
-                    f'{MONITORING_URL}/emergency_stop'
-                )
-                return {
-                    'status': 'command_processed',
-                    'action': 'emergency_stop'
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(
+                f'{TASK_ORCHESTRATOR_URL}/dispatch',
+                json={
+                    'source': body.source,
+                    'command': body.type,
+                    'verification_token': body.verification_token,
+                    'payload': body.data
                 }
-            elif body.type == 'set_max_torque':
-                await c.post(
-                    f'{SENSORS_URL}/set_max_torque',
-                    json={
-                        'max_torque': body.data.get(
-                            'max_torque', 50
-                        )
-                    }
-                )
-                return {
-                    'status': 'command_processed',
-                    'action': 'set_max_torque'
-                }
-            else:
-                return {
-                    'status': 'unknown_command',
-                    'type': body.type
-                }
+            )
+            return {
+                'status': 'forwarded_to_orchestrator',
+                'orchestrator_status': resp.status_code,
+                'result': resp.json()
+            }
     except Exception as e:
-        logger.error(f"Command error: {e}")
-        return {'status': 'error', 'error': str(e)}
+        logger.error(f"Command forwarding error: {e}")
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
 
 
 @app.get('/comms_history')

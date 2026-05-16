@@ -7,9 +7,12 @@ from enum import Enum
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy import (
+    create_engine, Column, Integer, String,
+    Boolean, DateTime
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
@@ -23,7 +26,9 @@ logging.basicConfig(
 logger = logging.getLogger(MODULE_NAME)
 
 DATABASE_URL = 'sqlite:///stop_module.db'
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
@@ -35,6 +40,9 @@ class StopReason(str, Enum):
     UNAUTHORIZED_COMMAND = "unauthorized_command"
     LOSS_OF_BALANCE = "loss_of_balance"
     MANUAL_RESET = "manual_reset"
+    CRITICAL_BATTERY = "critical_battery"
+    THERMAL_OVERHEAT = "thermal_overheat"
+    HYPOTHERMIA_RISK = "hypothermia_risk"
 
 
 class StopEventDB(Base):
@@ -42,7 +50,7 @@ class StopEventDB(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_type = Column(String(50))
-    reason = Column(String(50), nullable=True)
+    reason = Column(String(100), nullable=True)
     drives_enabled = Column(Boolean)
     stopped = Column(Boolean)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -55,17 +63,17 @@ Base.metadata.create_all(engine)
 class StopModule:
     drives_enabled: bool = False
     stopped: bool = False
-    last_reason: Optional[StopReason] = None
+    last_reason: Optional[str] = None
     last_event_at: Optional[datetime] = None
     log: list = field(default_factory=list)
 
-    def emergency_stop(self, reason: StopReason) -> None:
+    def emergency_stop(self, reason: str) -> None:
         self.drives_enabled = False
         self.stopped = True
         self.last_reason = reason
         self.last_event_at = datetime.now(timezone.utc)
-        self._log(f"АВАРИЙНАЯ ОСТАНОВКА: {reason.value}")
-        logger.warning(f"EMERGENCY STOP: {reason.value}")
+        self._log(f"АВАРИЙНАЯ ОСТАНОВКА: {reason}")
+        logger.warning(f"EMERGENCY STOP: {reason}")
 
     def smooth_stop(self) -> None:
         self.drives_enabled = False
@@ -90,7 +98,7 @@ class StopModule:
             self._log("Отказ сброса: нет полномочий")
             return False
         self.stopped = False
-        self.last_reason = StopReason.MANUAL_RESET
+        self.last_reason = StopReason.MANUAL_RESET.value
         self.last_event_at = datetime.now(timezone.utc)
         self._log("Аварийный режим сброшен")
         logger.info("Emergency reset authorized")
@@ -101,9 +109,10 @@ class StopModule:
             'service': 'stop',
             'drives_enabled': self.drives_enabled,
             'stopped': self.stopped,
-            'last_reason': self.last_reason.value if self.last_reason else None,
+            'last_reason': self.last_reason,
             'last_event_at': (
-                self.last_event_at.isoformat() if self.last_event_at else None
+                self.last_event_at.isoformat()
+                if self.last_event_at else None
             ),
             'log_tail': self.log[-8:]
         }
@@ -129,7 +138,6 @@ def save_event(event_type: str, reason: str = None):
         session.close()
 
 
-# --- Pydantic ---
 class EmergencyStopRequest(BaseModel):
     reason: str = "patient_emergency"
 
@@ -138,7 +146,7 @@ class ResetRequest(BaseModel):
     authorized: bool = False
 
 
-app = FastAPI(title="Stop Module", version="2.0")
+app = FastAPI(title="Stop Module", version="2.1")
 
 
 @app.get('/health')
@@ -153,9 +161,18 @@ def status():
 
 @app.post('/emergency-stop')
 def emergency_stop(body: EmergencyStopRequest):
-    reason = StopReason(body.reason)
+    # Допускаем и enum-значения, и строковые причины
+    reason = body.reason
+    try:
+        reason = StopReason(body.reason).value
+    except Exception:
+        logger.warning(
+            f"Unknown stop reason received, accepting as raw string: "
+            f"{body.reason}"
+        )
+
     _mod.emergency_stop(reason)
-    save_event('emergency_stop', reason.value)
+    save_event('emergency_stop', reason)
     return {'ok': True, 'state': _mod.snapshot()}
 
 
@@ -190,12 +207,14 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             .limit(limit).all()
         )
         return [{
-            'id': e.id, 'event_type': e.event_type,
+            'id': e.id,
+            'event_type': e.event_type,
             'reason': e.reason,
             'drives_enabled': e.drives_enabled,
             'stopped': e.stopped,
-            'created_at': e.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                if e.created_at else None
+            'created_at': e.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if e.created_at else None
         } for e in events]
     finally:
         session.close()

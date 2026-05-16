@@ -21,6 +21,12 @@ HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 8000))
 MODULE_NAME = os.getenv('MODULE_NAME', 'control_system')
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+)
+logger = logging.getLogger(MODULE_NAME)
+
 # --- URLs ---
 NEURAL_SIGNAL_URL = os.getenv(
     'NEURAL_SIGNAL_URL', 'http://localhost:8001'
@@ -40,6 +46,7 @@ FINGERS_URL = os.getenv(
 FORCE_CONTROL_URL = os.getenv(
     'FORCE_CONTROL_URL', 'http://localhost:8006'
 )
+
 LEG_NEURAL_URL = os.getenv(
     'LEG_NEURAL_URL', 'http://localhost:9001'
 )
@@ -55,6 +62,7 @@ TRACK_SYSTEM_URL = os.getenv(
 LEG_FORCE_URL = os.getenv(
     'LEG_FORCE_URL', 'http://localhost:9006'
 )
+
 STOP_MODULE_URL = os.getenv(
     'STOP_MODULE_URL', 'http://localhost:7001'
 )
@@ -73,6 +81,7 @@ COOLING_URL = os.getenv(
 TACTILE_VERIFY_URL = os.getenv(
     'TACTILE_VERIFY_URL', 'http://localhost:5207'
 )
+
 COMMS_URL = os.getenv(
     'COMMS_URL', 'http://localhost:6001'
 )
@@ -91,6 +100,7 @@ CHARGER_URL = os.getenv(
 BATTERY_CELL_URL = os.getenv(
     'BATTERY_CELL_URL', 'http://localhost:6006'
 )
+
 EMERGENCY_CONTROL_URL = os.getenv(
     'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
 )
@@ -119,12 +129,6 @@ TRUSTED_SOURCES = frozenset({
     "patient", "doctor_tablet",
     "rehab_center", "operator", "monitoring"
 })
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
-logger = logging.getLogger(MODULE_NAME)
 
 ARM_SUBSYSTEMS = {
     'neural_signal_system': NEURAL_SIGNAL_URL,
@@ -164,7 +168,6 @@ ALL_SUBSYSTEMS = {
     **MONITORING_SUBSYSTEMS,
 }
 
-# --- Database ---
 DATABASE_URL = 'sqlite:///control_system.db'
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
@@ -249,8 +252,6 @@ system_state = {
     'gateway_state': 'off',
 }
 
-# --- Pydantic Models ---
-
 
 class ArmStartRequest(BaseModel):
     signals: Optional[Dict[str, float]] = None
@@ -300,14 +301,12 @@ class EmergencyStopRequest(BaseModel):
     source: str = 'operator'
 
 
-# --- App ---
 app = FastAPI(
     title="Exoskeleton Control System",
-    version="4.1"
+    version="4.2"
 )
 
 
-# --- Helpers ---
 def get_client() -> httpx.Client:
     return httpx.Client(timeout=REQUEST_TIMEOUT)
 
@@ -352,7 +351,8 @@ def save_gateway_command(
     session = SessionLocal()
     try:
         session.add(GatewayCommandDB(
-            action=action, source=source,
+            action=action,
+            source=source,
             correlation_id=correlation_id,
             success=success,
             result_json=json.dumps(result, default=str)
@@ -362,34 +362,33 @@ def save_gateway_command(
         session.close()
 
 
-def check_subsystem_health(
-    name: str, url: str
-) -> Dict[str, Any]:
+def check_subsystem_health(name: str, url: str) -> Dict[str, Any]:
     try:
         with get_client() as c:
             resp = c.get(f'{url}/health')
             if resp.status_code == 200:
                 return {
-                    'name': name, 'url': url,
+                    'name': name,
+                    'url': url,
                     'status': 'healthy',
                     'response': resp.json()
                 }
             return {
-                'name': name, 'url': url,
+                'name': name,
+                'url': url,
                 'status': 'unhealthy',
                 'error': f'HTTP {resp.status_code}'
             }
     except Exception as e:
         return {
-            'name': name, 'url': url,
+            'name': name,
+            'url': url,
             'status': 'unreachable',
             'error': str(e)
         }
 
 
-def check_subsystems(
-    subsystems: Dict[str, str]
-) -> Dict[str, Any]:
+def check_subsystems(subsystems: Dict[str, str]) -> Dict[str, Any]:
     results = {}
     all_healthy = True
     for name, url in subsystems.items():
@@ -400,7 +399,8 @@ def check_subsystems(
             log_event(
                 'health_check_fail',
                 f"{name} is {result['status']}",
-                subsystem=name, success=False,
+                subsystem=name,
+                success=False,
                 details=result.get('error')
             )
     return {'all_healthy': all_healthy, 'subsystems': results}
@@ -446,10 +446,7 @@ def verify_neural_command(
             if not data.get('allowed', False):
                 raise HTTPException(
                     status_code=403,
-                    detail=(
-                        f"Neural verification blocked: "
-                        f"{data.get('reason')}"
-                    )
+                    detail=f"Neural verification blocked: {data.get('reason')}"
                 )
     except HTTPException:
         raise
@@ -513,7 +510,7 @@ def aggregate_aux_telemetry() -> Dict[str, Any]:
         'carriage': CARRIAGE_URL,
         'temperature': TEMPERATURE_URL,
         'heating': HEATING_URL,
-        'cooling': COOLING_URL,
+        'cooling': COOLING_URL
     }
     with get_client() as c:
         for key, url in services.items():
@@ -537,15 +534,12 @@ def aggregate_monitoring_telemetry() -> Dict[str, Any]:
         'sensors': SENSORS_URL,
         'battery_controller': BATTERY_CTRL_URL,
         'charger': CHARGER_URL,
-        'battery_cell': BATTERY_CELL_URL,
+        'battery_cell': BATTERY_CELL_URL
     }
     with get_client() as c:
         for key, url in services.items():
             try:
-                endpoint = (
-                    '/readings' if key == 'sensors'
-                    else '/status'
-                )
+                endpoint = '/readings' if key == 'sensors' else '/status'
                 resp = c.get(f'{url}{endpoint}')
                 parts[key] = (
                     resp.json()
@@ -557,9 +551,7 @@ def aggregate_monitoring_telemetry() -> Dict[str, Any]:
     return parts
 
 
-def apply_climate(
-    body_temp_c: float, air_temp_c: float
-) -> str:
+def apply_climate(body_temp_c: float, air_temp_c: float) -> str:
     with get_client() as c:
         c.post(
             f'{TEMPERATURE_URL}/sensors',
@@ -574,16 +566,10 @@ def apply_climate(
 
         if mode == 'heating':
             c.post(f'{COOLING_URL}/off')
-            c.post(
-                f'{HEATING_URL}/level',
-                json={'level': 0.55}
-            )
+            c.post(f'{HEATING_URL}/level', json={'level': 0.55})
         elif mode == 'cooling':
             c.post(f'{HEATING_URL}/off')
-            c.post(
-                f'{COOLING_URL}/speed',
-                json={'speed': 0.65}
-            )
+            c.post(f'{COOLING_URL}/speed', json={'speed': 0.65})
         else:
             c.post(f'{HEATING_URL}/off')
             c.post(f'{COOLING_URL}/off')
@@ -627,6 +613,7 @@ def run_cycle(
     else:
         system_state['leg_cycle_count'] += 1
         cycle_num = system_state['leg_cycle_count']
+
     system_state['total_cycle_count'] += 1
     system_state['control_state'] = ControlState.RUNNING
 
@@ -636,13 +623,10 @@ def run_cycle(
         body_part=body_part
     )
 
-    # Нейроанализ
     try:
         payload = {'signals': signals} if signals else {}
         with get_client() as c:
-            resp = c.post(
-                f'{neural_url}/analyze', json=payload
-            )
+            resp = c.post(f'{neural_url}/analyze', json=payload)
             if resp.status_code != 200:
                 raise Exception(f'HTTP {resp.status_code}')
             analysis = resp.json()
@@ -654,9 +638,7 @@ def run_cycle(
             cycle_num, body_part, 'none', 'idle',
             0, 0, False, False, None, error_msg, None
         )
-        raise HTTPException(
-            status_code=500, detail=error_msg
-        )
+        raise HTTPException(status_code=500, detail=error_msg)
 
     if body_part == 'arms':
         system_state['last_arm_analysis'] = analysis
@@ -669,17 +651,11 @@ def run_cycle(
     speed_mod = analysis.get('speed_modifier', 0)
     can_execute = analysis.get('can_execute', False)
 
-    logger.info(
-        f"{body_part}: target={target}, "
-        f"intent={intent}, can_execute={can_execute}"
-    )
-
     command_sent = False
     command_success = None
     command_error = None
 
     if can_execute and movement_ok:
-        # Верификация нейросигнала
         try:
             verify_neural_command(
                 body_part, target, intent, strength
@@ -696,9 +672,7 @@ def run_cycle(
             return {
                 'cycle': cycle_num,
                 'body_part': body_part,
-                'control_state': (
-                    system_state['control_state'].value
-                ),
+                'control_state': system_state['control_state'].value,
                 'systems_healthy': check['all_healthy'],
                 'analysis': analysis,
                 'command_sent': False,
@@ -706,7 +680,6 @@ def run_cycle(
                 'error': command_error
             }
 
-        # Ограничение силы
         try:
             adjusted = apply_force_limits(
                 body_part, target, intent,
@@ -728,9 +701,7 @@ def run_cycle(
             return {
                 'cycle': cycle_num,
                 'body_part': body_part,
-                'control_state': (
-                    system_state['control_state'].value
-                ),
+                'control_state': system_state['control_state'].value,
                 'systems_healthy': check['all_healthy'],
                 'analysis': analysis,
                 'command_sent': False,
@@ -748,14 +719,9 @@ def run_cycle(
 
         try:
             with get_client() as c:
-                resp = c.post(
-                    f'{movement_url}/execute',
-                    json=command
-                )
+                resp = c.post(f'{movement_url}/execute', json=command)
                 command_sent = True
-                command_success = (
-                    resp.status_code in [200, 204]
-                )
+                command_success = resp.status_code in [200, 204]
                 if command_success:
                     log_event(
                         'command_sent',
@@ -763,9 +729,7 @@ def run_cycle(
                         body_part=body_part
                     )
                 else:
-                    command_error = (
-                        f'HTTP {resp.status_code}'
-                    )
+                    command_error = f'HTTP {resp.status_code}'
         except Exception as e:
             command_sent = True
             command_success = False
@@ -775,15 +739,14 @@ def run_cycle(
                 body_part=body_part, success=False
             )
     elif not can_execute:
-        log_event(
-            'no_action', f'{body_part}: idle',
-            body_part=body_part
-        )
+        log_event('no_action', f'{body_part}: idle', body_part=body_part)
     elif not movement_ok:
         command_error = f'{movement_name} unavailable'
         log_event(
-            'command_skipped', command_error,
-            body_part=body_part, success=False
+            'command_skipped',
+            command_error,
+            body_part=body_part,
+            success=False
         )
 
     _save_cycle(
@@ -823,8 +786,10 @@ def _save_cycle(
         session.add(CycleHistoryDB(
             cycle_number=cycle_num,
             body_part=body_part,
-            target=target, intent=intent,
-            strength=strength, speed_modifier=speed_mod,
+            target=target,
+            intent=intent,
+            strength=strength,
+            speed_modifier=speed_mod,
             can_execute=can_execute,
             command_sent=command_sent,
             command_success=command_success,
@@ -843,8 +808,10 @@ def _save_audit(
     session = SessionLocal()
     try:
         session.add(MovementAuditDB(
-            body_part=body_part, target=target,
-            intent=intent, strength=strength,
+            body_part=body_part,
+            target=target,
+            intent=intent,
+            strength=strength,
             speed_modifier=speed_mod,
             source_module='control_system',
             result=result
@@ -853,8 +820,6 @@ def _save_audit(
     finally:
         session.close()
 
-
-# --- Endpoints ---
 
 @app.get('/health')
 def health_check():
@@ -901,16 +866,15 @@ def check_all_systems():
         log_event(
             'systems_check',
             f'Unhealthy: {unhealthy}',
-            success=False, details=str(unhealthy)
+            success=False,
+            details=str(unhealthy)
         )
     result['control_state'] = system_state['control_state'].value
     return result
 
 
 @app.post('/start/arms')
-def start_arm_cycle(
-    body: ArmStartRequest = ArmStartRequest()
-):
+def start_arm_cycle(body: ArmStartRequest = ArmStartRequest()):
     return run_cycle(
         body_part='arms',
         neural_url=NEURAL_SIGNAL_URL,
@@ -922,9 +886,7 @@ def start_arm_cycle(
 
 
 @app.post('/start/legs')
-def start_leg_cycle(
-    body: LegStartRequest = LegStartRequest()
-):
+def start_leg_cycle(body: LegStartRequest = LegStartRequest()):
     return run_cycle(
         body_part='legs',
         neural_url=LEG_NEURAL_URL,
@@ -936,9 +898,7 @@ def start_leg_cycle(
 
 
 @app.post('/start/full')
-def start_full_cycle(
-    body: FullStartRequest = FullStartRequest()
-):
+def start_full_cycle(body: FullStartRequest = FullStartRequest()):
     arm_result = None
     leg_result = None
     arm_error = None
@@ -968,19 +928,15 @@ def start_full_cycle(
 
 
 @app.post('/stop/emergency')
-def full_emergency_stop(
-    body: EmergencyStopRequest = EmergencyStopRequest()
-):
+def full_emergency_stop(body: EmergencyStopRequest = EmergencyStopRequest()):
     system_state['control_state'] = ControlState.EMERGENCY_STOP
     system_state['session_active'] = False
     system_state['gateway_state'] = 'emergency'
-    logger.critical(f"!!! EMERGENCY STOP from {body.source} !!!")
     log_event(
         'emergency_stop',
         f'Emergency stop from {body.source}',
         body_part='all'
     )
-
     signal_emergency(body.source, 'manual_emergency_stop')
 
     results = {}
@@ -989,9 +945,7 @@ def full_emergency_stop(
         try:
             with get_client() as c:
                 resp = c.post(f'{url}/emergency_stop')
-                results[name] = {
-                    'success': resp.status_code == 200
-                }
+                results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
 
@@ -1030,12 +984,8 @@ def reset_emergency(source: str = 'operator'):
             ok = resp.json().get('ok', False)
             if ok:
                 system_state['gateway_state'] = 'stopped'
-                system_state['control_state'] = (
-                    ControlState.STOPPED
-                )
-                log_event(
-                    'emergency_reset', f'Reset by {source}'
-                )
+                system_state['control_state'] = ControlState.STOPPED
+                log_event('emergency_reset', f'Reset by {source}')
             return {'ok': ok, 'result': resp.json()}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -1043,18 +993,11 @@ def reset_emergency(source: str = 'operator'):
 
 @app.post('/carriage/open')
 def open_carriage(body: CarriageRequest):
-    if (
-        body.source not in TRUSTED_SOURCES
-        and not body.emergency
-    ):
-        raise HTTPException(
-            status_code=403, detail='Untrusted source'
-        )
+    if body.source not in TRUSTED_SOURCES and not body.emergency:
+        raise HTTPException(status_code=403, detail='Untrusted source')
     try:
         stop_snap = get_stop_snapshot()
-        drives_stopped = not stop_snap.get(
-            'drives_enabled', False
-        )
+        drives_stopped = not stop_snap.get('drives_enabled', False)
         with get_client() as c:
             resp = c.post(
                 f'{CARRIAGE_URL}/open',
@@ -1076,9 +1019,7 @@ def open_carriage(body: CarriageRequest):
 @app.post('/carriage/close')
 def close_carriage(source: str = 'operator'):
     if source not in TRUSTED_SOURCES:
-        raise HTTPException(
-            status_code=403, detail='Untrusted source'
-        )
+        raise HTTPException(status_code=403, detail='Untrusted source')
     try:
         with get_client() as c:
             resp = c.post(f'{CARRIAGE_URL}/close')
@@ -1094,8 +1035,7 @@ def update_climate(body: ClimateRequest):
         mode = apply_climate(body.body_temp_c, body.air_temp_c)
         log_event(
             'climate_update',
-            f"Mode: {mode}, body={body.body_temp_c}, "
-            f"air={body.air_temp_c}"
+            f"Mode: {mode}, body={body.body_temp_c}, air={body.air_temp_c}"
         )
         return {'ok': True, 'climate_mode': mode}
     except Exception as e:
@@ -1155,8 +1095,7 @@ def control_battery_charge(body: BatteryChargeRequest):
             )
             log_event(
                 'battery_charge',
-                f"Charge "
-                f"{'enabled' if body.enable else 'disabled'}"
+                f"Charge {'enabled' if body.enable else 'disabled'}"
             )
             return resp.json()
     except Exception as e:
@@ -1171,46 +1110,36 @@ def send_alarm(body: AlarmSendRequest):
                 f'{COMMS_URL}/alarm',
                 json={'alarms': body.alarms}
             )
-            log_event(
-                'alarm_sent', f"Alarms: {body.alarms}"
-            )
+            log_event('alarm_sent', f"Alarms: {body.alarms}")
             return resp.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post('/commands')
-def gateway_commands(
-    body: Dict[str, Any] = Body(...)
-) -> JSONResponse:
+def gateway_commands(body: Dict[str, Any] = Body(...)) -> JSONResponse:
     cid = body.get('correlation_id')
     action = body.get('action')
 
     if not action:
         return JSONResponse(
-            {
-                'ok': False,
-                'error': 'missing_action',
-                'correlation_id': cid
-            }, 422
+            {'ok': False, 'error': 'missing_action', 'correlation_id': cid},
+            422
         )
-
-    logger.info(
-        f"Gateway: action={action}, "
-        f"source={body.get('source')}, cid={cid}"
-    )
 
     try:
         result = _gateway_dispatch(action, body)
         ok = result.get('ok', True)
         result['correlation_id'] = cid
         save_gateway_command(
-            action, str(body.get('source', '')),
-            str(cid), ok, result
+            action,
+            str(body.get('source', '')),
+            str(cid),
+            ok,
+            result
         )
-        return JSONResponse(
-            result, status_code=200 if ok else 422
-        )
+        return JSONResponse(result, status_code=200 if ok else 422)
+
     except httpx.HTTPError as e:
         err = {
             'ok': False,
@@ -1218,15 +1147,16 @@ def gateway_commands(
             'error': f'upstream:{e!s}'
         }
         save_gateway_command(
-            action, str(body.get('source', '')),
-            str(cid), False, err
+            action,
+            str(body.get('source', '')),
+            str(cid),
+            False,
+            err
         )
         return JSONResponse(err, status_code=502)
 
 
-def _gateway_dispatch(
-    action: str, body: Dict[str, Any]
-) -> Dict[str, Any]:
+def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
     src = str(body.get('source', ''))
 
     if action == 'initialize':
@@ -1245,22 +1175,25 @@ def _gateway_dispatch(
 
     if action == 'start_session':
         if src not in TRUSTED_SOURCES:
-            signal_emergency(
-                MODULE_NAME, 'unauthorized_command'
-            )
+            signal_emergency(MODULE_NAME, 'unauthorized_command')
             system_state['gateway_state'] = 'emergency'
             return {
-                'ok': False, 'error': 'untrusted_source',
+                'ok': False,
+                'error': 'untrusted_source',
                 'telemetry': aggregate_aux_telemetry()
             }
+
         snap = get_stop_snapshot()
         if snap.get('stopped'):
             return {
-                'ok': False, 'error': 'system_stopped',
+                'ok': False,
+                'error': 'system_stopped',
                 'telemetry': aggregate_aux_telemetry()
             }
+
         with get_client() as c:
             c.post(f'{STOP_MODULE_URL}/allow-movement')
+
         system_state['session_active'] = True
         system_state['gateway_state'] = 'session_active'
         log_event('session_start', f'Session started by {src}')
@@ -1272,7 +1205,8 @@ def _gateway_dispatch(
     if action == 'end_session':
         if src not in TRUSTED_SOURCES:
             return {
-                'ok': False, 'error': 'untrusted_source',
+                'ok': False,
+                'error': 'untrusted_source',
                 'telemetry': aggregate_aux_telemetry()
             }
         with get_client() as c:
@@ -1289,24 +1223,19 @@ def _gateway_dispatch(
         signal_emergency(src, 'gateway_emergency_command')
         system_state['session_active'] = False
         system_state['gateway_state'] = 'emergency'
-        system_state['control_state'] = (
-            ControlState.EMERGENCY_STOP
-        )
+        system_state['control_state'] = ControlState.EMERGENCY_STOP
         log_event('gateway_estop', f'From {src}')
         return {
             'ok': True,
-            'event': {
-                'type': 'emergency_stop', 'source': src
-            },
+            'event': {'type': 'emergency_stop', 'source': src},
             'telemetry': aggregate_aux_telemetry()
         }
 
     if action == 'reset_emergency':
-        if src not in (
-            'doctor_tablet', 'rehab_center', 'operator'
-        ):
+        if src not in ('doctor_tablet', 'rehab_center', 'operator'):
             return {
-                'ok': False, 'error': 'forbidden_source',
+                'ok': False,
+                'error': 'forbidden_source',
                 'telemetry': aggregate_aux_telemetry()
             }
         with get_client() as c:
@@ -1317,32 +1246,23 @@ def _gateway_dispatch(
         ok = resp.json().get('ok', False)
         if ok:
             system_state['gateway_state'] = 'stopped'
-        return {
-            'ok': ok,
-            'telemetry': aggregate_aux_telemetry()
-        }
+        return {'ok': ok, 'telemetry': aggregate_aux_telemetry()}
 
     if action == 'open_carriage':
-        if (
-            src not in TRUSTED_SOURCES
-            and not body.get('emergency')
-        ):
+        if src not in TRUSTED_SOURCES and not body.get('emergency'):
             return {
-                'ok': False, 'error': 'untrusted_source',
+                'ok': False,
+                'error': 'untrusted_source',
                 'telemetry': aggregate_aux_telemetry()
             }
         snap = get_stop_snapshot()
-        drives_stopped = not snap.get(
-            'drives_enabled', False
-        )
+        drives_stopped = not snap.get('drives_enabled', False)
         with get_client() as c:
             resp = c.post(
                 f'{CARRIAGE_URL}/open',
                 json={
                     'drives_stopped': drives_stopped,
-                    'emergency': bool(
-                        body.get('emergency', False)
-                    )
+                    'emergency': bool(body.get('emergency', False))
                 }
             )
         return {
@@ -1373,17 +1293,13 @@ def _gateway_dispatch(
                 f'{TACTILE_VERIFY_URL}/emit',
                 json={
                     'pattern': 'contact_sole',
-                    'intensity': float(
-                        body.get('intensity', 0.5)
-                    ),
+                    'intensity': float(body.get('intensity', 0.5)),
                     'source_trusted': trusted
                 }
             )
         return {
             'ok': True,
-            'result': {
-                'tactile': resp.json().get('message')
-            },
+            'result': {'tactile': resp.json().get('message')},
             'telemetry': aggregate_aux_telemetry()
         }
 
@@ -1408,9 +1324,7 @@ def reset_system():
         try:
             with get_client() as c:
                 resp = c.post(f'{url}/reset')
-                results[name] = {
-                    'success': resp.status_code == 200
-                }
+                results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
 
@@ -1425,9 +1339,7 @@ def reset_system():
         'gateway_state': 'off',
     })
     log_event('system_reset', 'Full reset', body_part='all')
-    return {
-        'message': 'Full reset complete', 'results': results
-    }
+    return {'message': 'Full reset complete', 'results': results}
 
 
 @app.get('/telemetry')
@@ -1436,9 +1348,7 @@ def full_telemetry():
         'gateway': {
             'session_active': system_state['session_active'],
             'gateway_state': system_state['gateway_state'],
-            'control_state': (
-                system_state['control_state'].value
-            )
+            'control_state': system_state['control_state'].value
         },
         'auxiliary': aggregate_aux_telemetry(),
         'monitoring': aggregate_monitoring_telemetry()
@@ -1455,13 +1365,9 @@ def get_event_log(
     try:
         query = session.query(SystemEventDB)
         if event_type:
-            query = query.filter(
-                SystemEventDB.event_type == event_type
-            )
+            query = query.filter(SystemEventDB.event_type == event_type)
         if body_part:
-            query = query.filter(
-                SystemEventDB.body_part == body_part
-            )
+            query = query.filter(SystemEventDB.body_part == body_part)
         events = (
             query
             .order_by(SystemEventDB.created_at.desc())
@@ -1492,9 +1398,7 @@ def get_cycle_history(
     try:
         query = session.query(CycleHistoryDB)
         if body_part:
-            query = query.filter(
-                CycleHistoryDB.body_part == body_part
-            )
+            query = query.filter(CycleHistoryDB.body_part == body_part)
         cycles = (
             query
             .order_by(CycleHistoryDB.created_at.desc())
@@ -1521,9 +1425,7 @@ def get_cycle_history(
 
 
 @app.get('/movement_audit')
-def get_movement_audit(
-    limit: int = Query(100, ge=1, le=1000)
-):
+def get_movement_audit(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
         audits = (
@@ -1549,9 +1451,7 @@ def get_movement_audit(
 
 
 @app.get('/gateway_history')
-def get_gateway_history(
-    limit: int = Query(100, ge=1, le=1000)
-):
+def get_gateway_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
         commands = (
@@ -1577,6 +1477,6 @@ if __name__ == '__main__':
     logger.info(f"Starting {MODULE_NAME} on {HOST}:{PORT}")
     log_event(
         'system_startup',
-        f'{MODULE_NAME} v4.1 starting on port {PORT}'
+        f'{MODULE_NAME} v4.2 starting on port {PORT}'
     )
     uvicorn.run(app, host=HOST, port=PORT)

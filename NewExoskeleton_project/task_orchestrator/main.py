@@ -8,7 +8,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime
+    create_engine, Column, Integer, String,
+    Boolean, DateTime
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -25,6 +26,7 @@ CONTROL_SYSTEM_URL = os.getenv(
 EMERGENCY_CONTROL_URL = os.getenv(
     'EMERGENCY_CONTROL_URL', 'http://localhost:5201'
 )
+REQUEST_TIMEOUT = 5.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +46,7 @@ EMERGENCY_COMMANDS = {'emergency_stop'}
 
 class TaskLogDB(Base):
     __tablename__ = 'task_log'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     source = Column(String(50))
     target = Column(String(50))
@@ -64,21 +67,27 @@ class CommandRequest(BaseModel):
 
 
 def save_task(
-    source: str, target: str,
-    command: str, trusted: bool, status: str
+    source: str,
+    target: str,
+    command: str,
+    trusted: bool,
+    status: str
 ):
     session = SessionLocal()
     try:
         session.add(TaskLogDB(
-            source=source, target=target,
-            command=command, trusted=trusted, status=status
+            source=source,
+            target=target,
+            command=command,
+            trusted=trusted,
+            status=status
         ))
         session.commit()
     finally:
         session.close()
 
 
-app = FastAPI(title="Task Orchestrator", version="2.1")
+app = FastAPI(title="Task Orchestrator", version="2.2")
 
 
 @app.get('/health')
@@ -108,9 +117,9 @@ def dispatch(body: CommandRequest):
         f"Dispatch: command={body.command}, source={body.source}"
     )
 
-    # 1. Верификация команды
+    # 1. Верификация
     try:
-        with httpx.Client(timeout=5.0) as c:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
             verify_resp = c.post(
                 f'{COMMAND_VERIFICATION_URL}/verify',
                 json={
@@ -124,8 +133,11 @@ def dispatch(body: CommandRequest):
             verify_data = verify_resp.json()
     except httpx.HTTPStatusError as e:
         save_task(
-            body.source, 'rejected',
-            body.command, False, 'rejected'
+            body.source,
+            'rejected',
+            body.command,
+            False,
+            'rejected'
         )
         raise HTTPException(
             status_code=403,
@@ -139,18 +151,22 @@ def dispatch(body: CommandRequest):
 
     if not verify_data.get('trusted', False):
         save_task(
-            body.source, 'rejected',
-            body.command, False, 'rejected'
+            body.source,
+            'rejected',
+            body.command,
+            False,
+            'rejected'
         )
         raise HTTPException(
-            status_code=403, detail='Untrusted command'
+            status_code=403,
+            detail='Untrusted command'
         )
 
     # 2. Маршрутизация
     if body.command in EMERGENCY_COMMANDS:
         target = 'emergency_control_module'
         try:
-            with httpx.Client(timeout=5.0) as c:
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
                 resp = c.post(
                     f'{EMERGENCY_CONTROL_URL}/emergency',
                     json={
@@ -171,7 +187,7 @@ def dispatch(body: CommandRequest):
     else:
         target = 'control_system'
         try:
-            with httpx.Client(timeout=5.0) as c:
+            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
                 resp = c.post(
                     f'{CONTROL_SYSTEM_URL}/commands',
                     json={
@@ -191,9 +207,12 @@ def dispatch(body: CommandRequest):
                 detail=f'Control system error: {e}'
             )
 
-    save_task(body.source, target, body.command, True, 'routed')
-    logger.info(
-        f"Routed '{body.command}' from {body.source} → {target}"
+    save_task(
+        body.source,
+        target,
+        body.command,
+        True,
+        'routed'
     )
 
     return {
@@ -220,8 +239,9 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             'command': l.command,
             'trusted': l.trusted,
             'status': l.status,
-            'created_at': l.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            if l.created_at else None
+            'created_at': l.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if l.created_at else None
         } for l in logs]
     finally:
         session.close()
