@@ -17,3 +17,6 @@ starlette==1.0.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.44.0
+kafka-python-ng==2.2.3
+cryptography==43.0.1
+requests==2.32.3

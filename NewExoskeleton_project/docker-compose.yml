@@ -1,8 +1,43 @@
 version: '3.8'
 
+x-kafka-env: &kafka-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_ENABLED: "true"
+
 services:
 
-  # ===== УПРАВЛЕНИЕ =====
+  # ===== ШИНА СОБЫТИЙ (KAFKA) =====
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== ЦЕНТРАЛЬНОЕ УПРАВЛЕНИЕ =====
   control_system:
     build:
       context: .
@@ -11,46 +46,37 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MODULE_NAME=control_system
-      # Руки
-      - NEURAL_SIGNAL_URL=http://neural_signal_system:8001
-      - ARM_MOVEMENT_URL=http://arm_movement_system:8002
-      - UPPER_ARM_URL=http://upper_arm_system:8003
-      - MIDDLE_ARM_URL=http://middle_arm_system:8004
-      - FINGERS_URL=http://fingers_system:8005
-      - FORCE_CONTROL_URL=http://force_control_system:8006
-      # Ноги
-      - LEG_NEURAL_URL=http://leg_neural_signal_system:9001
-      - LEG_MOVEMENT_URL=http://leg_movement_system:9002
-      - KNEE_BELT_URL=http://knee_belt_system:9003
-      - TRACK_SYSTEM_URL=http://track_system:9004
-      - LEG_FORCE_URL=http://leg_force_control_system:9006
-      # Вспомогательные
-      - STOP_MODULE_URL=http://stop_module:7001
-      - CARRIAGE_URL=http://carriage_system:7002
-      - TEMPERATURE_URL=http://temperature_system:7003
-      - HEATING_URL=http://heating_system:7004
-      - COOLING_URL=http://cooling_system:7005
-      - TACTILE_URL=http://tactile_system:7006
-      # Связь и мониторинг
-      - COMMS_URL=http://comms_module:6001
-      - MONITORING_URL=http://monitoring_system:6002
-      - SENSORS_URL=http://sensors_module:6003
-      - BATTERY_CTRL_URL=http://battery_controller:6004
-      - CHARGER_URL=http://charger_module:6005
-      - BATTERY_CELL_URL=http://battery_cell:6006
+      <<: *kafka-env
+      MODULE_NAME: control_system
+      NEURAL_SIGNAL_URL: http://neural_signal_system:8001
+      ARM_MOVEMENT_URL: http://arm_movement_system:8002
+      UPPER_ARM_URL: http://upper_arm_system:8003
+      MIDDLE_ARM_URL: http://middle_arm_system:8004
+      FINGERS_URL: http://fingers_system:8005
+      FORCE_CONTROL_URL: http://force_control_system:8006
+      LEG_NEURAL_URL: http://leg_neural_signal_system:9001
+      LEG_MOVEMENT_URL: http://leg_movement_system:9002
+      KNEE_BELT_URL: http://knee_belt_system:9003
+      TRACK_SYSTEM_URL: http://track_system:9004
+      LEG_FORCE_URL: http://leg_force_control_system:9006
+      STOP_MODULE_URL: http://stop_module:7001
+      CARRIAGE_URL: http://carriage_system:7002
+      TEMPERATURE_URL: http://temperature_system:7003
+      HEATING_URL: http://heating_system:7004
+      COOLING_URL: http://cooling_system:7005
+      TACTILE_URL: http://tactile_system:7006
+      COMMS_URL: http://comms_module:6001
+      MONITORING_URL: http://monitoring_system:6002
+      SENSORS_URL: http://sensors_module:6003
+      BATTERY_CTRL_URL: http://battery_controller:6004
+      CHARGER_URL: http://charger_module:6005
+      BATTERY_CELL_URL: http://battery_cell:6006
     depends_on:
+      - kafka
       - neural_signal_system
       - arm_movement_system
-      - upper_arm_system
-      - middle_arm_system
-      - fingers_system
-      - force_control_system
       - leg_neural_signal_system
       - leg_movement_system
-      - knee_belt_system
-      - track_system
-      - leg_force_control_system
       - stop_module
       - carriage_system
       - temperature_system
@@ -61,13 +87,28 @@ services:
       - monitoring_system
       - sensors_module
       - battery_controller
-      - charger_module
-      - battery_cell
     networks:
       - exo_network
     restart: unless-stopped
 
-  # ===== СВЯЗЬ И МОНИТОРИНГ =====
+  task_orchestrator:
+    build:
+      context: .
+      dockerfile: task_orchestrator/Dockerfile
+    container_name: task_orchestrator
+    ports:
+      - "5000:5000"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: task_orchestrator
+      PORT: 5000
+    depends_on:
+      - kafka
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== СВЯЗЬ И КРИПТОГРАФИЯ =====
   comms_module:
     build:
       context: .
@@ -76,10 +117,10 @@ services:
     ports:
       - "6001:6001"
     environment:
-      - MODULE_NAME=comms_module
-      - PORT=6001
-      - MONITORING_URL=http://monitoring_system:6002
-      - SENSORS_URL=http://sensors_module:6003
+      MODULE_NAME: comms_module
+      PORT: 6001
+      MONITORING_URL: http://monitoring_system:6002
+      SENSORS_URL: http://sensors_module:6003
     depends_on:
       - monitoring_system
       - sensors_module
@@ -87,6 +128,35 @@ services:
       - exo_network
     restart: unless-stopped
 
+  crypto_module:
+    build:
+      context: .
+      dockerfile: crypto_module/Dockerfile
+    container_name: crypto_module
+    ports:
+      - "4001:4001"
+    environment:
+      MODULE_NAME: crypto_module
+      PORT: 4001
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  command_verification:
+    build:
+      context: .
+      dockerfile: command_verification/Dockerfile
+    container_name: command_verification
+    ports:
+      - "5004:5001"
+    environment:
+      MODULE_NAME: command_verification
+      PORT: 5001
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== МОНИТОРИНГ И ТЕЛЕМЕТРИЯ =====
   monitoring_system:
     build:
       context: .
@@ -95,12 +165,14 @@ services:
     ports:
       - "6002:6002"
     environment:
-      - MODULE_NAME=monitoring_system
-      - PORT=6002
-      - SENSORS_URL=http://sensors_module:6003
-      - BATTERY_CTRL_URL=http://battery_controller:6004
-      - COMMS_URL=http://comms_module:6001
+      <<: *kafka-env
+      MODULE_NAME: monitoring_system
+      PORT: 6002
+      SENSORS_URL: http://sensors_module:6003
+      BATTERY_CTRL_URL: http://battery_controller:6004
+      COMMS_URL: http://comms_module:6001
     depends_on:
+      - kafka
       - sensors_module
       - battery_controller
     networks:
@@ -115,12 +187,79 @@ services:
     ports:
       - "6003:6003"
     environment:
-      - MODULE_NAME=sensors_module
-      - PORT=6003
+      <<: *kafka-env
+      MODULE_NAME: sensors_module
+      PORT: 6003
+    depends_on:
+      - kafka
     networks:
       - exo_network
     restart: unless-stopped
 
+  sensor_verification:
+    build:
+      context: .
+      dockerfile: sensor_verification/Dockerfile
+    container_name: sensor_verification
+    ports:
+      - "5003:5003"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: sensor_verification
+      PORT: 5003
+      SENSORS_URL: http://sensors_module:6003/readings
+      CRITICAL_SENSORS_URL: http://critical_sensors:4003/readings
+    depends_on:
+      - kafka
+      - sensors_module
+      - critical_sensors
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  critical_sensors:
+    build:
+      context: .
+      dockerfile: critical_sensors/Dockerfile
+    container_name: critical_sensors
+    ports:
+      - "4003:4003"
+    environment:
+      MODULE_NAME: critical_sensors
+      PORT: 4003
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  critical_sensors_arms:
+    build:
+      context: .
+      dockerfile: critical_sensors_arms/Dockerfile
+    container_name: critical_sensors_arms
+    ports:
+      - "7101:7101"
+    environment:
+      MODULE_NAME: critical_sensors_arms
+      PORT: 7101
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  critical_sensors_legs:
+    build:
+      context: .
+      dockerfile: critical_sensors_legs/Dockerfile
+    container_name: critical_sensors_legs
+    ports:
+      - "7102:7102"
+    environment:
+      MODULE_NAME: critical_sensors_legs
+      PORT: 7102
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== БАТАРЕЯ =====
   battery_controller:
     build:
       context: .
@@ -129,10 +268,10 @@ services:
     ports:
       - "6004:6004"
     environment:
-      - MODULE_NAME=battery_controller
-      - PORT=6004
-      - CHARGER_URL=http://charger_module:6005
-      - BATTERY_CELL_URL=http://battery_cell:6006
+      MODULE_NAME: battery_controller
+      PORT: 6004
+      CHARGER_URL: http://charger_module:6005
+      BATTERY_CELL_URL: http://battery_cell:6006
     depends_on:
       - charger_module
       - battery_cell
@@ -148,8 +287,8 @@ services:
     ports:
       - "6005:6005"
     environment:
-      - MODULE_NAME=charger_module
-      - PORT=6005
+      MODULE_NAME: charger_module
+      PORT: 6005
     networks:
       - exo_network
     restart: unless-stopped
@@ -162,41 +301,160 @@ services:
     ports:
       - "6006:6006"
     environment:
-      - MODULE_NAME=battery_cell
-      - PORT=6006
+      MODULE_NAME: battery_cell
+      PORT: 6006
     networks:
       - exo_network
     restart: unless-stopped
 
-  # ===== ВСПОМОГАТЕЛЬНЫЕ =====
-  stop_module:
+  critical_battery_monitor:
     build:
       context: .
-      dockerfile: stop_module/Dockerfile
-    container_name: stop_module
+      dockerfile: critical_battery_monitor/Dockerfile
+    container_name: critical_battery_monitor
     ports:
-      - "7001:7001"
+      - "4002:4002"
     environment:
-      - MODULE_NAME=stop_module
-      - PORT=7001
+      <<: *kafka-env
+      MODULE_NAME: critical_battery_monitor
+      PORT: 4002
+      CRITICAL_BATTERY_THRESHOLD: "15.0"
+    depends_on:
+      - kafka
     networks:
       - exo_network
     restart: unless-stopped
 
-  carriage_system:
+  # ===== АВАРИЙНЫЕ МОДУЛИ =====
+  emergency_control_module:
     build:
       context: .
-      dockerfile: carriage_system/Dockerfile
-    container_name: carriage_system
+      dockerfile: emergency_control_module/Dockerfile
+    container_name: emergency_control_module
     ports:
-      - "7002:7002"
+      - "5001:5001"
     environment:
-      - MODULE_NAME=carriage_system
-      - PORT=7002
+      <<: *kafka-env
+      MODULE_NAME: emergency_control_module
+      PORT: 5001
+      EMERGENCY_OPEN_URL: http://emergency_open_module:5002
+      EMERGENCY_STOP_URL: http://emergency_stop_module:5005
+    depends_on:
+      - kafka
+      - emergency_open_module
+      - emergency_stop_module
     networks:
       - exo_network
     restart: unless-stopped
 
+  emergency_open_module:
+    build:
+      context: .
+      dockerfile: emergency_open_module/Dockerfile
+    container_name: emergency_open_module
+    ports:
+      - "5002:5002"
+    environment:
+      MODULE_NAME: emergency_open_module
+      PORT: 5002
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  emergency_stop_module:
+    build:
+      context: .
+      dockerfile: emergency_stop_module/Dockerfile
+    container_name: emergency_stop_module
+    ports:
+      - "5005:5003"
+    environment:
+      MODULE_NAME: emergency_stop_module
+      PORT: 5003
+      ARM_MOVEMENT_URL: http://arm_movement_system:8002
+      LEG_MOVEMENT_URL: http://leg_movement_system:9002
+      UPPER_ARM_URL: http://upper_arm_system:8003
+      MIDDLE_ARM_URL: http://middle_arm_system:8004
+      FINGERS_URL: http://fingers_system:8005
+      FORCE_CONTROL_URL: http://force_control_system:8006
+      KNEE_BELT_URL: http://knee_belt_system:9003
+      TRACK_SYSTEM_URL: http://track_system:9004
+      LEG_FORCE_URL: http://leg_force_control_system:9006
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  critical_situation_recognition:
+    build:
+      context: .
+      dockerfile: critical_situation_recognition/Dockerfile
+    container_name: critical_situation_recognition
+    ports:
+      - "5006:5002"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: critical_situation_recognition
+      PORT: 5002
+    depends_on:
+      - kafka
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== НАВИГАЦИЯ =====
+  ins_navigation_module:
+    build:
+      context: .
+      dockerfile: ins_navigation_module/Dockerfile
+    container_name: ins_navigation_module
+    ports:
+      - "5007:5007"
+    environment:
+      MODULE_NAME: ins_navigation_module
+      PORT: 5007
+      POSITION_CHECK_URL: http://position_check_module:5008
+    depends_on:
+      - position_check_module
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  gnss_navigation_module:
+    build:
+      context: .
+      dockerfile: gnss_navigation_module/Dockerfile
+    container_name: gnss_navigation_module
+    ports:
+      - "5009:5006"
+    environment:
+      MODULE_NAME: gnss_navigation_module
+      PORT: 5006
+      POSITION_CHECK_URL: http://position_check_module:5008
+    depends_on:
+      - position_check_module
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  position_check_module:
+    build:
+      context: .
+      dockerfile: position_check_module/Dockerfile
+    container_name: position_check_module
+    ports:
+      - "5008:5008"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: position_check_module
+      PORT: 5008
+      EMERGENCY_CONTROL_URL: http://emergency_control_module:5001
+    depends_on:
+      - kafka
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== ТЕМПЕРАТУРА =====
   temperature_system:
     build:
       context: .
@@ -205,8 +463,25 @@ services:
     ports:
       - "7003:7003"
     environment:
-      - MODULE_NAME=temperature_system
-      - PORT=7003
+      MODULE_NAME: temperature_system
+      PORT: 7003
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  temperature_measurement_system:
+    build:
+      context: .
+      dockerfile: temperature_measurement_system/Dockerfile
+    container_name: temperature_measurement_system
+    ports:
+      - "7105:7105"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: temperature_measurement_system
+      PORT: 7105
+    depends_on:
+      - kafka
     networks:
       - exo_network
     restart: unless-stopped
@@ -219,8 +494,8 @@ services:
     ports:
       - "7004:7004"
     environment:
-      - MODULE_NAME=heating_system
-      - PORT=7004
+      MODULE_NAME: heating_system
+      PORT: 7004
     networks:
       - exo_network
     restart: unless-stopped
@@ -233,12 +508,42 @@ services:
     ports:
       - "7005:7005"
     environment:
-      - MODULE_NAME=cooling_system
-      - PORT=7005
+      MODULE_NAME: cooling_system
+      PORT: 7005
     networks:
       - exo_network
     restart: unless-stopped
 
+  # ===== ОСТАНОВКА И КОЛЯСКА =====
+  stop_module:
+    build:
+      context: .
+      dockerfile: stop_module/Dockerfile
+    container_name: stop_module
+    ports:
+      - "7001:7001"
+    environment:
+      MODULE_NAME: stop_module
+      PORT: 7001
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  carriage_system:
+    build:
+      context: .
+      dockerfile: carriage_system/Dockerfile
+    container_name: carriage_system
+    ports:
+      - "7002:7002"
+    environment:
+      MODULE_NAME: carriage_system
+      PORT: 7002
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  # ===== ТАКТИЛЬНАЯ СВЯЗЬ =====
   tactile_system:
     build:
       context: .
@@ -247,8 +552,25 @@ services:
     ports:
       - "7006:7006"
     environment:
-      - MODULE_NAME=tactile_system
-      - PORT=7006
+      MODULE_NAME: tactile_system
+      PORT: 7006
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  tactile_verification_module:
+    build:
+      context: .
+      dockerfile: tactile_verification_module/Dockerfile
+    container_name: tactile_verification_module
+    ports:
+      - "5010:5004"
+    environment:
+      MODULE_NAME: tactile_verification_module
+      PORT: 5004
+      TACTILE_URL: http://tactile_system:7006
+    depends_on:
+      - tactile_system
     networks:
       - exo_network
     restart: unless-stopped
@@ -262,7 +584,21 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - MODULE_NAME=neural_signal_system
+      MODULE_NAME: neural_signal_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  neural_verify_upper:
+    build:
+      context: .
+      dockerfile: neural_verify_upper/Dockerfile
+    container_name: neural_verify_upper
+    ports:
+      - "7103:7103"
+    environment:
+      MODULE_NAME: neural_verify_upper
+      PORT: 7103
     networks:
       - exo_network
     restart: unless-stopped
@@ -275,10 +611,10 @@ services:
     ports:
       - "8002:8002"
     environment:
-      - MODULE_NAME=arm_movement_system
-      - UPPER_ARM_URL=http://upper_arm_system:8003
-      - MIDDLE_ARM_URL=http://middle_arm_system:8004
-      - FINGERS_URL=http://fingers_system:8005
+      MODULE_NAME: arm_movement_system
+      UPPER_ARM_URL: http://upper_arm_system:8003
+      MIDDLE_ARM_URL: http://middle_arm_system:8004
+      FINGERS_URL: http://fingers_system:8005
     depends_on:
       - upper_arm_system
       - middle_arm_system
@@ -295,7 +631,7 @@ services:
     ports:
       - "8003:8003"
     environment:
-      - MODULE_NAME=upper_arm_system
+      MODULE_NAME: upper_arm_system
     networks:
       - exo_network
     restart: unless-stopped
@@ -308,7 +644,7 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - MODULE_NAME=middle_arm_system
+      MODULE_NAME: middle_arm_system
     networks:
       - exo_network
     restart: unless-stopped
@@ -321,8 +657,8 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - MODULE_NAME=fingers_system
-      - FORCE_CONTROL_URL=http://force_control_system:8006
+      MODULE_NAME: fingers_system
+      FORCE_CONTROL_URL: http://force_control_system:8006
     depends_on:
       - force_control_system
     networks:
@@ -337,7 +673,28 @@ services:
     ports:
       - "8006:8006"
     environment:
-      - MODULE_NAME=force_control_system
+      MODULE_NAME: force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  arm_force_limits_system:
+    build:
+      context: .
+      dockerfile: arm_force_limits_system/Dockerfile
+    container_name: arm_force_limits_system
+    ports:
+      - "7106:7106"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: arm_force_limits_system
+      PORT: 7106
+      CRITICAL_SENSORS_ARMS_URL: http://critical_sensors_arms:7101
+      STOP_MODULE_URL: http://stop_module:7001
+    depends_on:
+      - kafka
+      - critical_sensors_arms
+      - stop_module
     networks:
       - exo_network
     restart: unless-stopped
@@ -351,7 +708,21 @@ services:
     ports:
       - "9001:9001"
     environment:
-      - MODULE_NAME=leg_neural_signal_system
+      MODULE_NAME: leg_neural_signal_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  neural_verify_lower:
+    build:
+      context: .
+      dockerfile: neural_verify_lower/Dockerfile
+    container_name: neural_verify_lower
+    ports:
+      - "7104:7104"
+    environment:
+      MODULE_NAME: neural_verify_lower
+      PORT: 7104
     networks:
       - exo_network
     restart: unless-stopped
@@ -364,10 +735,10 @@ services:
     ports:
       - "9002:9002"
     environment:
-      - MODULE_NAME=leg_movement_system
-      - KNEE_SYSTEM_URL=http://knee_belt_system:9003
-      - TRACK_SYSTEM_URL=http://track_system:9004
-      - LEG_FORCE_URL=http://leg_force_control_system:9006
+      MODULE_NAME: leg_movement_system
+      KNEE_SYSTEM_URL: http://knee_belt_system:9003
+      TRACK_SYSTEM_URL: http://track_system:9004
+      LEG_FORCE_URL: http://leg_force_control_system:9006
     depends_on:
       - knee_belt_system
       - track_system
@@ -384,7 +755,7 @@ services:
     ports:
       - "9003:9003"
     environment:
-      - MODULE_NAME=knee_belt_system
+      MODULE_NAME: knee_belt_system
     networks:
       - exo_network
     restart: unless-stopped
@@ -397,7 +768,7 @@ services:
     ports:
       - "9004:9004"
     environment:
-      - MODULE_NAME=track_system
+      MODULE_NAME: track_system
     networks:
       - exo_network
     restart: unless-stopped
@@ -410,7 +781,28 @@ services:
     ports:
       - "9006:9006"
     environment:
-      - MODULE_NAME=leg_force_control_system
+      MODULE_NAME: leg_force_control_system
+    networks:
+      - exo_network
+    restart: unless-stopped
+
+  leg_force_limits_system:
+    build:
+      context: .
+      dockerfile: leg_force_limits_system/Dockerfile
+    container_name: leg_force_limits_system
+    ports:
+      - "9105:9105"
+    environment:
+      <<: *kafka-env
+      MODULE_NAME: leg_force_limits_system
+      PORT: 9105
+      CRITICAL_SENSORS_LEGS_URL: http://critical_sensors_legs:7102
+      STOP_MODULE_URL: http://stop_module:7001
+    depends_on:
+      - kafka
+      - critical_sensors_legs
+      - stop_module
     networks:
       - exo_network
     restart: unless-stopped
