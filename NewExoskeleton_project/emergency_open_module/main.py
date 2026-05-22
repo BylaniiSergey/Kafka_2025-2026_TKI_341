@@ -1,5 +1,8 @@
-# emergency_open_module/main.py
+import sys
 import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 from datetime import datetime
 
@@ -17,7 +20,7 @@ MODULE_NAME = os.getenv('MODULE_NAME', 'emergency_open_module')
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
 )
 logger = logging.getLogger(MODULE_NAME)
 
@@ -44,7 +47,7 @@ Base.metadata.create_all(engine)
 cabin_state = {
     'is_open': False,
     'total_openings': 0,
-    'last_open_reason': None
+    'last_open_reason': None,
 }
 
 
@@ -53,7 +56,7 @@ class OpenRequest(BaseModel):
     reason: str = 'emergency'
 
 
-app = FastAPI(title="Emergency Open Module", version="1.0")
+app = FastAPI(title="Emergency Open Module", version="1.1")
 
 
 @app.get('/health')
@@ -67,20 +70,15 @@ def get_status():
         'service': MODULE_NAME,
         'cabin_is_open': cabin_state['is_open'],
         'total_openings': cabin_state['total_openings'],
-        'last_open_reason': cabin_state['last_open_reason']
+        'last_open_reason': cabin_state['last_open_reason'],
     }
 
 
 @app.post('/open')
 def open_cabin(body: OpenRequest):
-    """
-    Аварийное открытие кабины экзоскелета.
-    Выполняется БЕЗУСЛОВНО — без проверки состояния приводов.
-    Активируется только от emergency_control_module.
-    """
     logger.critical(
-        f"EMERGENCY CABIN OPEN: source='{body.source}', "
-        f"reason='{body.reason}'"
+        f"EMERGENCY CABIN OPEN: source={body.source}, "
+        f"reason={body.reason}"
     )
 
     cabin_state['is_open'] = True
@@ -92,7 +90,7 @@ def open_cabin(body: OpenRequest):
         session.add(OpenEventDB(
             source=body.source,
             reason=body.reason,
-            cabin_opened=True
+            cabin_opened=True,
         ))
         session.commit()
     finally:
@@ -101,22 +99,23 @@ def open_cabin(body: OpenRequest):
     return {
         'ok': True,
         'cabin_opened': True,
-        'message': 'Cabin opened unconditionally (emergency)',
         'source': body.source,
-        'reason': body.reason
+        'reason': body.reason,
     }
 
 
 @app.post('/close')
 def close_cabin(source: str = 'operator'):
-    """Закрыть кабину (только после устранения аварии)"""
     cabin_state['is_open'] = False
-    logger.info(f"Cabin closed by {source}")
-    return {
-        'ok': True,
-        'cabin_is_open': False,
-        'closed_by': source
-    }
+    return {'ok': True, 'cabin_is_open': False}
+
+
+@app.post('/reset')
+def reset():
+    cabin_state['is_open'] = False
+    cabin_state['total_openings'] = 0
+    cabin_state['last_open_reason'] = None
+    return {'ok': True}
 
 
 @app.get('/history')
@@ -129,12 +128,10 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             .limit(limit).all()
         )
         return [{
-            'id': e.id,
-            'source': e.source,
-            'reason': e.reason,
+            'id': e.id, 'source': e.source, 'reason': e.reason,
             'cabin_opened': e.cabin_opened,
             'created_at': e.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            if e.created_at else None
+            if e.created_at else None,
         } for e in events]
     finally:
         session.close()

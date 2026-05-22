@@ -1,8 +1,11 @@
-# Критичные датчики в руках — резервный канал давления/углов для контроля силы рук (MM).
+import sys
 import os
-import logging
-from typing import Any, Dict
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
+from typing import Any, Dict, Optional
+
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -11,30 +14,101 @@ HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "7101"))
 MODULE_NAME = os.getenv("MODULE_NAME", "critical_sensors_arms")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+UPPER_ARM_URL     = os.getenv("UPPER_ARM_URL",     "http://localhost:8003")
+MIDDLE_ARM_URL    = os.getenv("MIDDLE_ARM_URL",    "http://localhost:8004")
+FINGERS_URL       = os.getenv("FINGERS_URL",       "http://localhost:8005")
+FORCE_CONTROL_URL = os.getenv("FORCE_CONTROL_URL", "http://localhost:8006")
+
+# Уменьшаем таймаут: 8 запросов × 0.5с = 4с вместо 24с
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "0.5"))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
 logger = logging.getLogger(MODULE_NAME)
 
-_state: Dict[str, Any] = {
-    "trusted": True,
-    "pressure_left_n": 0.0,
-    "pressure_right_n": 0.0,
-    "elbow_left_deg": 90.0,
-    "elbow_right_deg": 90.0,
-    "shoulder_left_deg": 45.0,
-    "shoulder_right_deg": 45.0,
-}
+_trusted = True
 
 
-class SensorsUpdate(BaseModel):
-    pressure_left_n: float | None = None
-    pressure_right_n: float | None = None
-    elbow_left_deg: float | None = None
-    elbow_right_deg: float | None = None
-    shoulder_left_deg: float | None = None
-    shoulder_right_deg: float | None = None
+class TrustedUpdate(BaseModel):
+    trusted: Optional[bool] = None
 
 
-app = FastAPI(title="Critical sensors — arms", version="1.0")
+def _poll_drive_states() -> Dict[str, Any]:
+    """
+    Опрашивает реальное состояние приводов рук.
+    Использует ОДИН общий клиент для всех запросов.
+    Таймаут 0.5с — при недоступном приводе не зависаем надолго.
+    """
+    state = {}
+
+    # Один клиент на все запросы — не создаём SSL контекст 8 раз
+    with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+
+        # Верхний отдел (плечо)
+        for arm in ["left", "right"]:
+            try:
+                resp = c.get(f"{UPPER_ARM_URL}/positions/{arm}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    state[f"upper_{arm}"] = {
+                        "positions": data.get("positions", {}),
+                        "status":    data.get("status", "unknown"),
+                    }
+            except Exception as e:
+                state[f"upper_{arm}_error"] = str(e)
+
+        # Средний отдел (локоть)
+        for arm in ["left", "right"]:
+            try:
+                resp = c.get(f"{MIDDLE_ARM_URL}/positions/{arm}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    state[f"middle_{arm}"] = {
+                        "positions": data.get("positions", {}),
+                        "status":    data.get("status", "unknown"),
+                    }
+            except Exception as e:
+                state[f"middle_{arm}_error"] = str(e)
+
+        # Пальцы
+        try:
+            resp = c.get(f"{FINGERS_URL}/status")
+            if resp.status_code == 200:
+                data = resp.json()
+                for arm in ["left", "right"]:
+                    if arm in data:
+                        state[f"fingers_{arm}"] = {
+                            "grip_percentage": data[arm].get(
+                                "grip_percentage", 0.0
+                            ),
+                            "grip_force": data[arm].get("grip_force", 0.0),
+                            "status":     data[arm].get("status", "unknown"),
+                        }
+        except Exception as e:
+            state["fingers_error"] = str(e)
+
+        # Контроль силы
+        try:
+            resp = c.get(f"{FORCE_CONTROL_URL}/status")
+            if resp.status_code == 200:
+                data = resp.json()
+                for arm in ["left", "right"]:
+                    if arm in data:
+                        state[f"force_{arm}"] = {
+                            "current_force": data[arm].get(
+                                "current_force", 0.0
+                            ),
+                            "status": data[arm].get("status", "unknown"),
+                        }
+        except Exception as e:
+            state["force_error"] = str(e)
+
+    return state
+
+
+app = FastAPI(title="Critical sensors — arms", version="3.1")
 
 
 @app.get("/health")
@@ -44,17 +118,35 @@ def health():
 
 @app.get("/snapshot")
 def snapshot():
-    return {"service": MODULE_NAME, "trusted": _state["trusted"], "readings": dict(_state)}
+    drives = _poll_drive_states()
+    return {
+        "service":      MODULE_NAME,
+        "trusted":      _trusted,
+        "drive_states": drives,
+    }
 
 
-@app.post("/update")
-def update(body: SensorsUpdate):
-    for k, v in body.model_dump(exclude_none=True).items():
-        _state[k] = v
-    logger.info("Critical arm sensors updated")
+@app.get("/drive_snapshot")
+def drive_snapshot():
+    """Алиас для обратной совместимости."""
     return snapshot()
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host=HOST, port=PORT)
+@app.post("/set_trusted")
+def set_trusted(body: TrustedUpdate):
+    global _trusted
+    if body.trusted is not None:
+        _trusted = body.trusted
+    return {"ok": True, "trusted": _trusted}
 
+
+@app.post("/reset")
+def reset():
+    global _trusted
+    _trusted = True
+    return {"ok": True}
+
+
+if __name__ == "__main__":
+    logger.info(f"Starting {MODULE_NAME} on {HOST}:{PORT}")
+    uvicorn.run(app, host=HOST, port=PORT)

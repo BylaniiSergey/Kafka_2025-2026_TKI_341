@@ -1,4 +1,6 @@
-import sys, os
+import sys
+import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import random
@@ -10,22 +12,33 @@ from datetime import datetime
 import uvicorn
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from kafka_bus import EventBus, TOPIC_SENSORS_RAW
+from logging_config import setup_logging
+
+# ── Конфигурация ──────────────────────────────────────────────────────────────
 
 HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 6003))
 MODULE_NAME = os.getenv('MODULE_NAME', 'sensors_module')
-PUBLISH_INTERVAL_S = float(os.getenv('PUBLISH_INTERVAL_S', '1.0'))
+
+# Интервал публикации в Kafka — 20 секунд
+PUBLISH_INTERVAL_S = float(os.getenv('PUBLISH_INTERVAL_S', '20.0'))
+
+# ── Логирование ───────────────────────────────────────────────────────────────
+
+setup_logging()
+logger = logging.getLogger(MODULE_NAME)
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
 
 bus = EventBus(client_id=MODULE_NAME)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
-logger = logging.getLogger(MODULE_NAME)
+# ── База данных ───────────────────────────────────────────────────────────────
 
-DATABASE_URL = 'sqlite:///sensors_module.db'
+DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///sensors_module.db')
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -46,38 +59,76 @@ class SensorReadingDB(Base):
 
 Base.metadata.create_all(engine)
 
+# ── Состояние симулятора ──────────────────────────────────────────────────────
+
 _angle = 45.0
 _velocity = 0.0
 _max_torque = 50.0
+_state_lock = threading.Lock()
 
 
-def simulate_sensors():
+def _simulate_sensors():
+    """Симулирует физику датчиков на высокой частоте (20 Гц)."""
     global _angle, _velocity
     while True:
         time.sleep(0.05)
-        _velocity += (random.random() - 0.5) * 10
-        _velocity = max(-100, min(100, _velocity))
-        _angle += _velocity * 0.05
-        _angle = max(0, min(150, _angle))
+        with _state_lock:
+            _velocity += (random.random() - 0.5) * 10
+            _velocity = max(-100, min(100, _velocity))
+            _angle += _velocity * 0.05
+            _angle = max(0, min(150, _angle))
 
 
-def publish_readings_loop():
+def _get_current_readings() -> dict:
+    """Возвращает текущие показания всех датчиков."""
+    with _state_lock:
+        angle = _angle
+        velocity = _velocity
+    return {
+        'joint_angle': round(angle, 2),
+        'joint_angular_velocity': round(velocity, 2),
+        'torque': round(20.0 + random.random() * 10, 2),
+        'imu_roll': round(random.random() * 5 - 2.5, 3),
+        'imu_pitch': round(random.random() * 10 - 5, 3),
+        'imu_yaw': round(random.random() * 3 - 1.5, 3),
+        'motor_temp': round(35.0 + random.random() * 10, 1),
+    }
+
+
+def _publish_readings_loop():
+    """
+    Публикует данные датчиков в Kafka каждые PUBLISH_INTERVAL_S секунд.
+    Логирует каждую публикацию для контроля.
+    """
+    publish_count = 0
+    logger.info(
+        "Publish loop started, interval=%ds", PUBLISH_INTERVAL_S
+    )
+
     while True:
         time.sleep(PUBLISH_INTERVAL_S)
-        bus.publish(TOPIC_SENSORS_RAW, {
-            'joint_angle': round(_angle, 2),
-            'joint_angular_velocity': round(_velocity, 2),
-            'torque': round(20.0 + random.random() * 10, 2),
-            'imu_roll': round(random.random() * 5 - 2.5, 3),
-            'imu_pitch': round(random.random() * 10 - 5, 3),
-            'imu_yaw': round(random.random() * 3 - 1.5, 3),
-            'motor_temp': round(35.0 + random.random() * 10, 1),
-        })
+
+        readings = _get_current_readings()
+        success = bus.publish(TOPIC_SENSORS_RAW, readings)
+        publish_count += 1
+
+        logger.info(
+            "Publish #%d %s | angle=%.1f vel=%.1f temp=%.1f",
+            publish_count,
+            "OK" if success else "FAIL",
+            readings['joint_angle'],
+            readings['joint_angular_velocity'],
+            readings['motor_temp'],
+        )
 
 
-threading.Thread(target=simulate_sensors, daemon=True).start()
-threading.Thread(target=publish_readings_loop, daemon=True).start()
+# ── Запуск фоновых потоков ────────────────────────────────────────────────────
 
+threading.Thread(target=_simulate_sensors, daemon=True, name="sim").start()
+threading.Thread(target=_publish_readings_loop, daemon=True, name="pub").start()
+
+
+# ── Pydantic модели ───────────────────────────────────────────────────────────
 
 class SensorReadings(BaseModel):
     joint_angle: float
@@ -94,50 +145,57 @@ class MaxTorqueRequest(BaseModel):
     max_torque: float
 
 
-def save_reading():
+# ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def _save_reading(readings: dict):
+    """Сохраняет показания в SQLite."""
     session = SessionLocal()
     try:
-        session.add(SensorReadingDB(
-            joint_angle=_angle, joint_angular_velocity=_velocity,
-            torque=20.0 + random.random() * 10,
-            imu_roll=random.random() * 5 - 2.5,
-            imu_pitch=random.random() * 10 - 5,
-            imu_yaw=random.random() * 3 - 1.5,
-            motor_temp=35.0 + random.random() * 10
-        ))
+        db_fields = {
+            k: v for k, v in readings.items()
+            if k in (
+                'joint_angle', 'joint_angular_velocity',
+                'torque', 'imu_roll', 'imu_pitch', 'imu_yaw', 'motor_temp',
+            )
+        }
+        session.add(SensorReadingDB(**db_fields))
         session.commit()
+    except Exception as e:
+        logger.error("DB save failed: %s", e)
+        session.rollback()
     finally:
         session.close()
 
 
-app = FastAPI(title="Sensors Module", version="2.0")
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Sensors Module", version="2.1")
 
 
 @app.get('/health')
 def health():
-    return {'status': 'ok', 'service': MODULE_NAME}
+    return {
+        'status': 'ok',
+        'service': MODULE_NAME,
+        'publish_interval_s': PUBLISH_INTERVAL_S,
+    }
 
 
 @app.get('/readings', response_model=SensorReadings)
 def get_readings():
-    readings = SensorReadings(
-        joint_angle=round(_angle, 2),
-        joint_angular_velocity=round(_velocity, 2),
-        torque=round(20.0 + random.random() * 10, 2),
-        imu_roll=round(random.random() * 5 - 2.5, 3),
-        imu_pitch=round(random.random() * 10 - 5, 3),
-        imu_yaw=round(random.random() * 3 - 1.5, 3),
-        motor_temp=round(35.0 + random.random() * 10, 1),
-        timestamp=datetime.now().isoformat()
+    readings = _get_current_readings()
+    _save_reading(readings)
+    return SensorReadings(
+        **readings,
+        timestamp=datetime.now().isoformat(),
     )
-    save_reading()
-    return readings
 
 
 @app.post('/set_max_torque')
 def set_max_torque(body: MaxTorqueRequest):
     global _max_torque
     _max_torque = body.max_torque
+    logger.info("Max torque set to %.2f", _max_torque)
     return {'status': 'ok', 'max_torque': _max_torque}
 
 
@@ -145,15 +203,30 @@ def set_max_torque(body: MaxTorqueRequest):
 def get_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
-        readings = session.query(SensorReadingDB).order_by(SensorReadingDB.created_at.desc()).limit(limit).all()
-        return [{'id': r.id, 'joint_angle': r.joint_angle, 'joint_angular_velocity': r.joint_angular_velocity,
-                 'torque': r.torque, 'imu_roll': r.imu_roll, 'imu_pitch': r.imu_pitch,
-                 'imu_yaw': r.imu_yaw, 'motor_temp': r.motor_temp,
-                 'created_at': r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else None} for r in readings]
+        rows = (
+            session.query(SensorReadingDB)
+            .order_by(SensorReadingDB.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [{
+            'id': r.id,
+            'joint_angle': r.joint_angle,
+            'joint_angular_velocity': r.joint_angular_velocity,
+            'torque': r.torque,
+            'imu_roll': r.imu_roll,
+            'imu_pitch': r.imu_pitch,
+            'imu_yaw': r.imu_yaw,
+            'motor_temp': r.motor_temp,
+            'created_at': r.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            if r.created_at else None,
+        } for r in rows]
     finally:
         session.close()
 
 
+# ── Запуск ────────────────────────────────────────────────────────────────────
+
 if __name__ == '__main__':
-    logger.info(f"Starting {MODULE_NAME} on {HOST}:{PORT}")
-    uvicorn.run(app, host=HOST, port=PORT)
+    logger.info("Starting %s on %s:%d", MODULE_NAME, HOST, PORT)
+    uvicorn.run(app, host=HOST, port=PORT, access_log=False)

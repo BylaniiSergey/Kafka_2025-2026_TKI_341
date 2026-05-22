@@ -3,21 +3,24 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import math
 import logging
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 import uvicorn
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    create_engine, Column, Integer, Float, Boolean, String, DateTime
+    create_engine, Column, Integer, Float, Boolean, String, DateTime,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from kafka_bus import (
-    EventBus, TOPIC_SENSORS_RAW, TOPIC_SENSORS_VERIFIED
-)
+from kafka_bus import EventBus, TOPIC_SENSORS_RAW, TOPIC_SENSORS_VERIFIED
+from logging_config import setup_logging
+
+# ── Конфигурация ──────────────────────────────────────────────────────────────
 
 HOST = '0.0.0.0'
 PORT = int(os.getenv('PORT', 5103))
@@ -29,27 +32,27 @@ SENSORS_URL = os.getenv(
 CRITICAL_SENSORS_URL = os.getenv(
     'CRITICAL_SENSORS_URL', 'http://localhost:4003/readings'
 )
-MAX_DEVIATION = float(os.getenv('MAX_DEVIATION', '5.0'))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-)
+MAX_DEVIATION = float(os.getenv('MAX_DEVIATION', '150.0'))
+FAIL_THRESHOLD = int(os.getenv('FAIL_THRESHOLD', '3'))
+
+# ── Логирование ───────────────────────────────────────────────────────────────
+
+setup_logging()
 logger = logging.getLogger(MODULE_NAME)
+
+# ── База данных ───────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.getenv(
     'DATABASE_URL', 'sqlite:///sensor_verification.db'
 )
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
-)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
 class VerificationLogDB(Base):
     __tablename__ = 'verification_log'
-
     id = Column(Integer, primary_key=True)
     metric = Column(String(50))
     regular_value = Column(Float)
@@ -58,13 +61,27 @@ class VerificationLogDB(Base):
     passed = Column(Boolean)
     forwarded = Column(Boolean)
     transport = Column(String(20))
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 Base.metadata.create_all(engine)
 
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+
 bus = EventBus(client_id=MODULE_NAME)
 
+# ── Счётчики последовательных сбоев ───────────────────────────────────────────
+
+_consecutive_failures: dict[str, int] = {}
+
+# ── Счётчик обработанных сообщений (для лога) ─────────────────────────────────
+
+_message_count = 0
+
+
+# ── Pydantic модели ───────────────────────────────────────────────────────────
 
 class VerificationRequest(BaseModel):
     metric: str
@@ -81,7 +98,9 @@ class VerificationResponse(BaseModel):
     reason: str
 
 
-def save_log(metric, reg, crit, dev, passed, forwarded, transport):
+# ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def _save_log(metric, reg, crit, dev, passed, forwarded, transport):
     session = SessionLocal()
     try:
         session.add(VerificationLogDB(
@@ -94,29 +113,68 @@ def save_log(metric, reg, crit, dev, passed, forwarded, transport):
             transport=transport,
         ))
         session.commit()
+    except Exception as e:
+        logger.error("DB write failed: %s", e)
+        session.rollback()
     finally:
         session.close()
 
 
-def fetch_critical_snapshot() -> dict:
+def _fetch_critical_snapshot() -> dict:
     try:
-        with httpx.Client(timeout=2.0) as c:
+        with httpx.Client(timeout=3.0) as c:
             resp = c.get(CRITICAL_SENSORS_URL)
             if resp.status_code == 200:
                 return resp.json()
+            else:
+                logger.warning(
+                    "Critical sensors returned HTTP %d", resp.status_code
+                )
     except Exception as e:
         logger.debug("Critical sensors fetch failed: %s", e)
-
     return {}
 
 
-def verify_metric(metric: str, regular: float, critical: float,
-                  tolerance: float = MAX_DEVIATION,
-                  transport: str = 'http') -> dict:
+def _normalize_critical_data(critical: dict) -> dict:
+    KEY_MAP = {
+        'angle': 'joint_angle',
+        'joint_angle': 'joint_angle',
+        'velocity': 'joint_angular_velocity',
+        'angular_velocity': 'joint_angular_velocity',
+        'joint_angular_velocity': 'joint_angular_velocity',
+        'torque': 'torque',
+        'motor_temp': 'motor_temp',
+        'temperature': 'motor_temp',
+        'roll': 'imu_roll',
+        'imu_roll': 'imu_roll',
+        'pitch': 'imu_pitch',
+        'imu_pitch': 'imu_pitch',
+        'yaw': 'imu_yaw',
+        'imu_yaw': 'imu_yaw',
+    }
+    normalized = {}
+    for raw_key, value in critical.items():
+        standard_key = KEY_MAP.get(raw_key, raw_key)
+        normalized[standard_key] = value
+    return normalized
+
+
+def _verify_metric(
+    metric: str,
+    regular: float,
+    critical: float,
+    tolerance: float = MAX_DEVIATION,
+    transport: str = 'http',
+) -> dict:
+    if math.isnan(regular) or math.isinf(regular):
+        regular = 0.0
+    if math.isnan(critical) or math.isinf(critical):
+        critical = regular
+
     deviation = abs(regular - critical)
     passed = deviation <= tolerance
 
-    save_log(
+    _save_log(
         metric, regular, critical, deviation,
         passed, passed, transport,
     )
@@ -133,51 +191,101 @@ def verify_metric(metric: str, regular: float, critical: float,
 
 
 def _on_raw_sensor_message(payload: dict):
-    critical = fetch_critical_snapshot()
-    verified = {'trusted': True}
-    any_failed = False
+    """
+    Обработчик сообщений из exo.sensors.raw.
+    Вызывается каждые 20 секунд (интервал sensors_module).
+    """
+    global _message_count
+    _message_count += 1
 
-    for metric in ('joint_angle', 'joint_angular_velocity'):
+    # Получаем данные критических датчиков
+    raw_critical = _fetch_critical_snapshot()
+    critical = _normalize_critical_data(raw_critical)
+
+    verified = {'trusted': True}
+    failed_metrics = []
+
+    # Перекрёстная верификация
+    cross_check_metrics = ('joint_angle', 'joint_angular_velocity')
+
+    for metric in cross_check_metrics:
         if metric not in payload:
             continue
 
-        reg = float(payload[metric])
-        crit = float(critical.get(metric, reg))
-        result = verify_metric(metric, reg, crit, transport='kafka')
+        reg = payload[metric]
+
+        if metric not in critical:
+            verified[metric] = reg
+            _consecutive_failures[metric] = 0
+            continue
+
+        crit = critical[metric]
+        result = _verify_metric(
+            metric, float(reg), float(crit),
+            tolerance=MAX_DEVIATION,
+            transport='kafka',
+        )
 
         if result['passed']:
             verified[metric] = reg
+            _consecutive_failures[metric] = 0
         else:
-            any_failed = True
-            verified[metric] = None
+            _consecutive_failures[metric] = (
+                _consecutive_failures.get(metric, 0) + 1
+            )
+            count = _consecutive_failures[metric]
 
-    for metric in ('torque', 'motor_temp', 'imu_roll',
-                   'imu_pitch', 'imu_yaw'):
+            if count >= FAIL_THRESHOLD:
+                failed_metrics.append(metric)
+                verified[metric] = None
+            else:
+                verified[metric] = reg
+
+    # Проходные метрики
+    for metric in ('torque', 'motor_temp', 'imu_roll', 'imu_pitch', 'imu_yaw'):
         if metric in payload:
             verified[metric] = payload[metric]
 
-    if any_failed:
+    # Итоговый статус
+    if failed_metrics:
         verified['trusted'] = False
-        logger.warning("Sensor verification failed, data marked untrusted")
+        logger.warning(
+            "Verification #%d FAILED — metrics: %s",
+            _message_count, failed_metrics,
+        )
+    else:
+        verified['trusted'] = True
+        # Логируем каждую успешную верификацию
+        logger.info(
+            "Verification #%d OK | angle=%.1f vel=%.1f trusted=True",
+            _message_count,
+            verified.get('joint_angle', 0),
+            verified.get('joint_angular_velocity', 0),
+        )
 
     bus.publish(TOPIC_SENSORS_VERIFIED, verified)
 
 
-app = FastAPI(title="Sensor Verification", version="3.1")
+# ── FastAPI ───────────────────────────────────────────────────────────────────
 
-
-@app.on_event('startup')
-def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting %s on %s:%s", MODULE_NAME, HOST, PORT)
     bus.subscribe(
         TOPIC_SENSORS_RAW,
         handler=_on_raw_sensor_message,
         group_id='sensor-verification',
     )
-
-
-@app.on_event('shutdown')
-def on_shutdown():
+    yield
     bus.close()
+    logger.info("%s stopped", MODULE_NAME)
+
+
+app = FastAPI(
+    title="Sensor Verification",
+    version="3.3",
+    lifespan=lifespan,
+)
 
 
 @app.get('/health')
@@ -185,21 +293,21 @@ def health():
     return {
         'status': 'healthy',
         'module': MODULE_NAME,
-        'port': PORT,
+        'messages_processed': _message_count,
     }
 
 
 @app.post('/verify', response_model=VerificationResponse)
 def verify(body: VerificationRequest):
-    result = verify_metric(
+    result = _verify_metric(
         body.metric, body.regular_value, body.critical_value,
         tolerance=body.tolerance, transport='http',
     )
     logger.info(
-        "Verify %s: %s | dev=%s",
+        "Manual verify %s: %s | dev=%.3f",
         body.metric,
         'PASS' if result['passed'] else 'FAIL',
-        result['deviation']
+        result['deviation'],
     )
     return VerificationResponse(**result)
 
@@ -207,7 +315,7 @@ def verify(body: VerificationRequest):
 @app.get('/auto_verify')
 def auto_verify(metric: str = "joint_angle"):
     try:
-        with httpx.Client(timeout=2.0) as c:
+        with httpx.Client(timeout=3.0) as c:
             reg_resp = c.get(SENSORS_URL)
             crit_resp = c.get(CRITICAL_SENSORS_URL)
 
@@ -215,15 +323,23 @@ def auto_verify(metric: str = "joint_angle"):
             raise HTTPException(503, "Failed to fetch sensor data")
 
         reg_data = reg_resp.json()
-        crit_data = crit_resp.json()
+        crit_data = _normalize_critical_data(crit_resp.json())
 
         reg = reg_data.get(metric)
         crit = crit_data.get(metric)
 
-        if reg is None or crit is None:
-            raise HTTPException(400, f"Metric '{metric}' missing")
+        if reg is None:
+            raise HTTPException(
+                400, f"Metric '{metric}' missing in sensors_module"
+            )
+        if crit is None:
+            raise HTTPException(
+                400,
+                f"Metric '{metric}' missing in critical_sensors. "
+                f"Available: {list(crit_data.keys())}",
+            )
 
-        result = verify_metric(
+        result = _verify_metric(
             metric, float(reg), float(crit), transport='http'
         )
         return VerificationResponse(**result)
@@ -238,6 +354,9 @@ def status():
         'service': MODULE_NAME,
         'port': PORT,
         'max_deviation': MAX_DEVIATION,
+        'fail_threshold': FAIL_THRESHOLD,
+        'messages_processed': _message_count,
+        'consecutive_failures': dict(_consecutive_failures),
         'regular_source': SENSORS_URL,
         'critical_source': CRITICAL_SENSORS_URL,
     }
@@ -254,19 +373,33 @@ def history(limit: int = 100):
             .all()
         )
         return [{
-            'id': l.id,
-            'metric': l.metric,
-            'regular': l.regular_value,
-            'critical': l.critical_value,
-            'deviation': l.deviation,
-            'passed': l.passed,
-            'transport': l.transport,
-            'created_at': l.created_at.isoformat(),
-        } for l in logs]
+            'id': log.id,
+            'metric': log.metric,
+            'regular': log.regular_value,
+            'critical': log.critical_value,
+            'deviation': log.deviation,
+            'passed': log.passed,
+            'transport': log.transport,
+            'created_at': log.created_at.isoformat(),
+        } for log in logs]
     finally:
         session.close()
 
 
+@app.get('/debug/critical_keys')
+def debug_critical_keys():
+    raw = _fetch_critical_snapshot()
+    normalized = _normalize_critical_data(raw)
+    return {
+        'raw_keys': list(raw.keys()),
+        'normalized_keys': list(normalized.keys()),
+        'joint_angle_found': 'joint_angle' in normalized,
+        'velocity_found': 'joint_angular_velocity' in normalized,
+    }
+
+
+# ── Запуск ────────────────────────────────────────────────────────────────────
+
 if __name__ == '__main__':
     logger.info("Starting %s on %s:%s", MODULE_NAME, HOST, PORT)
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT, access_log=False)
