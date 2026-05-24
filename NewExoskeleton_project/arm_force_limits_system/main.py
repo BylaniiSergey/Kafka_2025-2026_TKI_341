@@ -1,3 +1,4 @@
+# arm_force_limits_system/main.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,30 +22,30 @@ CRITICAL_SENSORS_URL = os.getenv(
     "CRITICAL_SENSORS_ARMS_URL", "http://localhost:7101"
 )
 
-# Приводы напрямую (канал Б — то что сообщают сами приводы)
-UPPER_ARM_URL = os.getenv("UPPER_ARM_URL", "http://localhost:8003")
-MIDDLE_ARM_URL = os.getenv("MIDDLE_ARM_URL", "http://localhost:8004")
-FINGERS_URL = os.getenv("FINGERS_URL", "http://localhost:8005")
+# Приводы напрямую (канал Б)
+UPPER_ARM_URL     = os.getenv("UPPER_ARM_URL",     "http://localhost:8003")
+MIDDLE_ARM_URL    = os.getenv("MIDDLE_ARM_URL",    "http://localhost:8004")
+FINGERS_URL       = os.getenv("FINGERS_URL",       "http://localhost:8005")
 FORCE_CONTROL_URL = os.getenv("FORCE_CONTROL_URL", "http://localhost:8006")
 
 REQUEST_TIMEOUT = 5.0
 
-MAX_SHOULDER_DEG = float(os.getenv("MAX_SHOULDER_DEG", "150"))
-MAX_ELBOW_DEG = float(os.getenv("MAX_ELBOW_DEG", "150"))
-MAX_GRIP_FORCE = float(os.getenv("MAX_GRIP_FORCE", "150"))
+MAX_SHOULDER_DEG    = float(os.getenv("MAX_SHOULDER_DEG",    "150"))
+MAX_ELBOW_DEG       = float(os.getenv("MAX_ELBOW_DEG",       "150"))
+MAX_GRIP_FORCE      = float(os.getenv("MAX_GRIP_FORCE",      "150"))
 MAX_ANGLE_DIVERGENCE = float(os.getenv("MAX_ANGLE_DIVERGENCE", "15.0"))
 MAX_FORCE_DIVERGENCE = float(os.getenv("MAX_FORCE_DIVERGENCE", "30.0"))
 
 INTENT_TO_EXPECTED = {
-    "lift_arm": ["upper"],
-    "lower_arm": ["upper"],
-    "extend_arm": ["upper", "middle"],
+    "lift_arm":    ["upper"],
+    "lower_arm":   ["upper"],
+    "extend_arm":  ["upper", "middle"],
     "retract_arm": ["upper", "middle"],
-    "flex_elbow": ["middle"],
+    "flex_elbow":  ["middle"],
     "extend_elbow": ["middle"],
-    "grasp": ["fingers"],
-    "release": ["fingers"],
-    "idle": [],
+    "grasp":       ["fingers"],
+    "release":     ["fingers"],
+    "idle":        [],
 }
 
 logging.basicConfig(
@@ -57,13 +58,25 @@ bus = EventBus(client_id=MODULE_NAME)
 
 
 class EvaluateBody(BaseModel):
-    intent: str = "idle"
-    arm: str = "none"
-    strength: float = 0.0
-    speed_modifier: float = 0.0
-    verified_intent: Optional[str] = None
+    intent:            str   = "idle"
+    arm:               str   = "none"
+    strength:          float = 0.0
+    speed_modifier:    float = 0.0
+    verified_intent:   Optional[str]   = None
     verified_strength: Optional[float] = None
 
+
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Emergency ─────────────────────────────────────────────────────────────────
 
 def _trigger_emergency(reason: str, details: Dict = None):
     payload = {"source": MODULE_NAME, "reason": reason}
@@ -74,18 +87,16 @@ def _trigger_emergency(reason: str, details: Dict = None):
 
 
 # ═══════════════════════════════════════════════════════════
-# КАНАЛ А: Критические датчики (независимый аппаратный канал)
-# Опрашивают приводы через свой собственный путь
+# КАНАЛ А: Критические датчики
 # ═══════════════════════════════════════════════════════════
 
 def _get_critical_sensor_data() -> Optional[Dict]:
     """
-    Получает данные от критических датчиков.
-    Критические датчики САМИ опрашивают приводы
-    через аппаратный канал и возвращают результат.
+    Получает данные от критических датчиков (канал А).
+    Использует get_client() — патчится в тестах.
     """
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             resp = c.get(f"{CRITICAL_SENSORS_URL}/snapshot")
             resp.raise_for_status()
             return resp.json()
@@ -95,83 +106,79 @@ def _get_critical_sensor_data() -> Optional[Dict]:
 
 
 # ═══════════════════════════════════════════════════════════
-# КАНАЛ Б: Прямой опрос приводов (то что сообщают сами приводы)
-# Эти данные МОГУТ быть фальсифицированы
+# КАНАЛ Б: Прямой опрос приводов
 # ═══════════════════════════════════════════════════════════
 
 def _poll_drives_directly() -> Dict[str, Any]:
     """
-    Опрашивает приводы НАПРЯМУЮ через их HTTP API.
-    Это то, что приводы ГОВОРЯТ о себе.
-    Может не совпадать с реальностью (фальсификация).
+    Опрашивает приводы напрямую (канал Б).
+    Использует get_client() — патчится в тестах.
     """
     drives = {}
 
-    # Верхний отдел (плечо)
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-            for arm in ["left", "right"]:
+    with get_client() as c:
+        # Верхний отдел (плечо)
+        for arm in ["left", "right"]:
+            try:
                 resp = c.get(f"{UPPER_ARM_URL}/positions/{arm}")
                 if resp.status_code == 200:
                     data = resp.json()
                     drives[f"upper_{arm}"] = {
                         "positions": data.get("positions", {}),
-                        "status": data.get("status", "unknown"),
+                        "status":    data.get("status", "unknown"),
                     }
-    except Exception as e:
-        logger.warning(f"Cannot poll upper_arm directly: {e}")
-        drives["upper_error"] = str(e)
+            except Exception as e:
+                logger.warning(f"Cannot poll upper_arm/{arm}: {e}")
+                drives[f"upper_{arm}_error"] = str(e)
 
-    # Средний отдел (локоть)
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-            for arm in ["left", "right"]:
+        # Средний отдел (локоть)
+        for arm in ["left", "right"]:
+            try:
                 resp = c.get(f"{MIDDLE_ARM_URL}/positions/{arm}")
                 if resp.status_code == 200:
                     data = resp.json()
                     drives[f"middle_{arm}"] = {
                         "positions": data.get("positions", {}),
-                        "status": data.get("status", "unknown"),
+                        "status":    data.get("status", "unknown"),
                     }
-    except Exception as e:
-        logger.warning(f"Cannot poll middle_arm directly: {e}")
-        drives["middle_error"] = str(e)
+            except Exception as e:
+                logger.warning(f"Cannot poll middle_arm/{arm}: {e}")
+                drives[f"middle_{arm}_error"] = str(e)
 
-    # Пальцы
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        # Пальцы
+        try:
             resp = c.get(f"{FINGERS_URL}/status")
             if resp.status_code == 200:
                 data = resp.json()
                 for arm in ["left", "right"]:
                     if arm in data:
                         drives[f"fingers_{arm}"] = {
-                            "grip_percentage":
-                                data[arm].get("grip_percentage", 0.0),
-                            "grip_force":
-                                data[arm].get("grip_force", 0.0),
-                            "status":
-                                data[arm].get("status", "unknown"),
+                            "grip_percentage": data[arm].get(
+                                "grip_percentage", 0.0
+                            ),
+                            "grip_force": data[arm].get("grip_force", 0.0),
+                            "status":     data[arm].get("status", "unknown"),
                         }
-    except Exception as e:
-        logger.warning(f"Cannot poll fingers directly: {e}")
+        except Exception as e:
+            logger.warning(f"Cannot poll fingers: {e}")
+            drives["fingers_error"] = str(e)
 
-    # Контроль силы
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        # Контроль силы
+        try:
             resp = c.get(f"{FORCE_CONTROL_URL}/status")
             if resp.status_code == 200:
                 data = resp.json()
                 for arm in ["left", "right"]:
                     if arm in data:
                         drives[f"force_{arm}"] = {
-                            "current_force":
-                                data[arm].get("current_force", 0.0),
-                            "status":
-                                data[arm].get("status", "unknown"),
+                            "current_force": data[arm].get(
+                                "current_force", 0.0
+                            ),
+                            "status": data[arm].get("status", "unknown"),
                         }
-    except Exception as e:
-        logger.warning(f"Cannot poll force_control directly: {e}")
+        except Exception as e:
+            logger.warning(f"Cannot poll force_control: {e}")
+            drives["force_error"] = str(e)
 
     return drives
 
@@ -186,25 +193,23 @@ def _compare_channels(
     """
     Сравнивает данные критических датчиков (канал А)
     с данными от самих приводов (канал Б).
-
-    Канал А = истина (аппаратный, независимый)
-    Канал Б = то что приводы говорят (может быть ложью)
-
-    Если расхождение > порога — фальсификация.
+    Возвращает описание расхождения или None.
     """
     a_drives = channel_a.get("drive_states", {})
-    arm_key = arm if arm in ("left", "right") else "right"
+    arm_key  = arm if arm in ("left", "right") else "right"
 
-    # ─── Сравнение плеча ──────────────────────────────────
+    # Плечо
     a_upper = a_drives.get(f"upper_{arm_key}", {})
     b_upper = channel_b.get(f"upper_{arm_key}", {})
 
     if a_upper and b_upper:
         a_positions = a_upper.get("positions", {})
         b_positions = b_upper.get("positions", {})
-
-        for joint in ["shoulder_flexion", "shoulder_abduction",
-                       "shoulder_rotation"]:
+        for joint in [
+            "shoulder_flexion",
+            "shoulder_abduction",
+            "shoulder_rotation",
+        ]:
             a_val = a_positions.get(joint)
             b_val = b_positions.get(joint)
             if a_val is not None and b_val is not None:
@@ -217,14 +222,13 @@ def _compare_channels(
                         f"divergence={div:.1f}"
                     )
 
-    # ─── Сравнение локтя ──────────────────────────────────
+    # Локоть
     a_middle = a_drives.get(f"middle_{arm_key}", {})
     b_middle = channel_b.get(f"middle_{arm_key}", {})
 
     if a_middle and b_middle:
         a_pos = a_middle.get("positions", {})
         b_pos = b_middle.get("positions", {})
-
         for joint in ["elbow_flexion", "forearm_pronation"]:
             a_val = a_pos.get(joint)
             b_val = b_pos.get(joint)
@@ -238,7 +242,7 @@ def _compare_channels(
                         f"divergence={div:.1f}"
                     )
 
-    # ─── Сравнение силы захвата ───────────────────────────
+    # Сила захвата
     a_fingers = a_drives.get(f"fingers_{arm_key}", {})
     b_fingers = channel_b.get(f"fingers_{arm_key}", {})
 
@@ -254,7 +258,7 @@ def _compare_channels(
                 f"divergence={div:.1f}"
             )
 
-    # ─── Сравнение контроллера силы ───────────────────────
+    # Контроллер силы
     a_force = a_drives.get(f"force_{arm_key}", {})
     b_force = channel_b.get(f"force_{arm_key}", {})
 
@@ -270,20 +274,22 @@ def _compare_channels(
                 f"divergence={div:.1f}"
             )
 
-    # ─── Сравнение статусов ───────────────────────────────
+    # Статусы
     a_status = a_drives.get(f"upper_{arm_key}", {}).get("status")
     b_status = channel_b.get(f"upper_{arm_key}", {}).get("status")
-    if (a_status and b_status
-            and a_status != b_status
-            and a_status != "unknown"
-            and b_status != "unknown"):
+    if (
+        a_status and b_status
+        and a_status != b_status
+        and a_status != "unknown"
+        and b_status != "unknown"
+    ):
         return (
             f"upper_{arm_key}.status: "
             f"critical_sensor={a_status}, "
             f"drive_reports={b_status}"
         )
 
-    return None  # нет расхождений
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -293,17 +299,14 @@ def _compare_channels(
 def _check_biophysical_limits_from_critical(
     channel_a: Dict, arm: str
 ) -> Optional[str]:
-    """
-    Проверяет биофизические ограничения по данным
-    КРИТИЧЕСКИХ ДАТЧИКОВ (истинным).
-    """
-    ds = channel_a.get("drive_states", {})
+    """Биофизические ограничения по данным критических датчиков (канал А)."""
+    ds      = channel_a.get("drive_states", {})
     arm_key = arm if arm in ("left", "right") else "right"
 
-    upper = ds.get(f"upper_{arm_key}", {})
+    upper     = ds.get(f"upper_{arm_key}", {})
     positions = upper.get("positions", {})
     for joint, limit in [
-        ("shoulder_flexion", MAX_SHOULDER_DEG),
+        ("shoulder_flexion",   MAX_SHOULDER_DEG),
         ("shoulder_abduction", MAX_SHOULDER_DEG),
     ]:
         val = abs(positions.get(joint, 0.0))
@@ -311,10 +314,13 @@ def _check_biophysical_limits_from_critical(
             return f"{joint}={val:.1f} > {limit} (critical sensor)"
 
     middle = ds.get(f"middle_{arm_key}", {})
-    m_pos = middle.get("positions", {})
-    elbow = abs(m_pos.get("elbow_flexion", 0.0))
+    m_pos  = middle.get("positions", {})
+    elbow  = abs(m_pos.get("elbow_flexion", 0.0))
     if elbow > MAX_ELBOW_DEG:
-        return f"elbow_flexion={elbow:.1f} > {MAX_ELBOW_DEG} (critical sensor)"
+        return (
+            f"elbow_flexion={elbow:.1f} > {MAX_ELBOW_DEG} "
+            "(critical sensor)"
+        )
 
     return None
 
@@ -322,16 +328,12 @@ def _check_biophysical_limits_from_critical(
 def _check_biophysical_limits_from_drives(
     channel_b: Dict, arm: str
 ) -> Optional[str]:
-    """
-    Проверяет биофизические ограничения по данным
-    от САМИХ ПРИВОДОВ (может быть ложью, но проверяем тоже).
-    """
-    arm_key = arm if arm in ("left", "right") else "right"
-
-    upper = channel_b.get(f"upper_{arm_key}", {})
+    """Биофизические ограничения по данным приводов (канал Б)."""
+    arm_key   = arm if arm in ("left", "right") else "right"
+    upper     = channel_b.get(f"upper_{arm_key}", {})
     positions = upper.get("positions", {})
     for joint, limit in [
-        ("shoulder_flexion", MAX_SHOULDER_DEG),
+        ("shoulder_flexion",   MAX_SHOULDER_DEG),
         ("shoulder_abduction", MAX_SHOULDER_DEG),
     ]:
         val = abs(positions.get(joint, 0.0))
@@ -339,10 +341,13 @@ def _check_biophysical_limits_from_drives(
             return f"{joint}={val:.1f} > {limit} (drive self-report)"
 
     middle = channel_b.get(f"middle_{arm_key}", {})
-    m_pos = middle.get("positions", {})
-    elbow = abs(m_pos.get("elbow_flexion", 0.0))
+    m_pos  = middle.get("positions", {})
+    elbow  = abs(m_pos.get("elbow_flexion", 0.0))
     if elbow > MAX_ELBOW_DEG:
-        return f"elbow_flexion={elbow:.1f} > {MAX_ELBOW_DEG} (drive self-report)"
+        return (
+            f"elbow_flexion={elbow:.1f} > {MAX_ELBOW_DEG} "
+            "(drive self-report)"
+        )
 
     return None
 
@@ -350,45 +355,42 @@ def _check_biophysical_limits_from_drives(
 def _check_excessive_force(
     channel_a: Dict, channel_b: Dict, arm: str
 ) -> Optional[str]:
-    """
-    Проверяет силу из ОБОИХ каналов.
-    Если хоть один показывает превышение — стоп.
-    """
-    arm_key = arm if arm in ("left", "right") else "right"
+    """Проверяет силу из обоих каналов."""
+    arm_key  = arm if arm in ("left", "right") else "right"
+    a_drives = channel_a.get("drive_states", {})
 
     # Канал А
-    a_drives = channel_a.get("drive_states", {})
     a_fingers = a_drives.get(f"fingers_{arm_key}", {})
-    a_grip = a_fingers.get("grip_force", 0.0)
+    a_grip    = a_fingers.get("grip_force", 0.0)
     if a_grip > MAX_GRIP_FORCE:
         return (
             f"grip_force={a_grip:.1f} > {MAX_GRIP_FORCE} "
-            f"(critical sensor)"
+            "(critical sensor)"
         )
 
-    a_force = a_drives.get(f"force_{arm_key}", {})
+    a_force   = a_drives.get(f"force_{arm_key}", {})
     a_current = a_force.get("current_force", 0.0)
     if a_current > MAX_GRIP_FORCE:
         return (
             f"current_force={a_current:.1f} > {MAX_GRIP_FORCE} "
-            f"(critical sensor)"
+            "(critical sensor)"
         )
 
     # Канал Б
     b_fingers = channel_b.get(f"fingers_{arm_key}", {})
-    b_grip = b_fingers.get("grip_force", 0.0)
+    b_grip    = b_fingers.get("grip_force", 0.0)
     if b_grip > MAX_GRIP_FORCE:
         return (
             f"grip_force={b_grip:.1f} > {MAX_GRIP_FORCE} "
-            f"(drive self-report)"
+            "(drive self-report)"
         )
 
-    b_force = channel_b.get(f"force_{arm_key}", {})
+    b_force   = channel_b.get(f"force_{arm_key}", {})
     b_current = b_force.get("current_force", 0.0)
     if b_current > MAX_GRIP_FORCE:
         return (
             f"current_force={b_current:.1f} > {MAX_GRIP_FORCE} "
-            f"(drive self-report)"
+            "(drive self-report)"
         )
 
     return None
@@ -396,48 +398,38 @@ def _check_excessive_force(
 
 def _check_intent_execution(
     intent: str, arm: str,
-    channel_a: Dict, channel_b: Dict
+    channel_a: Dict, channel_b: Dict,
 ) -> Optional[str]:
-    """
-    Проверяет что приводы выполняют нужное движение.
-    Используем ОБА канала — если хоть один показывает
-    emergency_stop при активном intent — значит привод
-    не выполняет команду.
-    """
+    """Проверяет выполнение команды приводами по обоим каналам."""
     expected = INTENT_TO_EXPECTED.get(intent, [])
     if not expected or intent == "idle":
         return None
 
-    arm_key = arm if arm in ("left", "right") else "right"
+    arm_key    = arm if arm in ("left", "right") else "right"
     violations = []
 
     for drive_type in expected:
         key = f"{drive_type}_{arm_key}"
-        if drive_type == "fingers":
-            key = f"fingers_{arm_key}"
 
-        # Проверяем по каналу А
-        a_ds = channel_a.get("drive_states", {})
+        a_ds     = channel_a.get("drive_states", {})
         a_status = a_ds.get(key, {}).get("status", "idle")
         if a_status == "emergency_stop":
-            violations.append(
-                f"{key}=emergency_stop (critical sensor)"
-            )
+            violations.append(f"{key}=emergency_stop (critical sensor)")
 
-        # Проверяем по каналу Б
         b_status = channel_b.get(key, {}).get("status", "idle")
         if b_status == "emergency_stop":
-            violations.append(
-                f"{key}=emergency_stop (drive self-report)"
-            )
+            violations.append(f"{key}=emergency_stop (drive self-report)")
 
     return "; ".join(violations) if violations else None
 
 
 def _check_verified_match(
-    intent: str, verified_intent: Optional[str],
-    strength: float, verified_strength: Optional[float],
+    intent:            str,
+    verified_intent:   Optional[str],
+    strength:          float,
+    verified_strength: Optional[float],
 ) -> Optional[str]:
+    """Проверяет соответствие верификации нейросигнала."""
     if verified_intent is None:
         return None
     if verified_intent != intent:
@@ -453,13 +445,14 @@ def _check_verified_match(
 
 
 def _send_force_correction(arm: str, new_strength: float):
+    """Отправляет корректировку силы в force_control."""
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             c.post(f"{FORCE_CONTROL_URL}/apply_force", json={
-                "arm": arm,
-                "grip_type": "corrected",
+                "arm":        arm,
+                "grip_type":  "corrected",
                 "target_force": new_strength * 100,
-                "max_force": MAX_GRIP_FORCE,
+                "max_force":  MAX_GRIP_FORCE,
             })
             logger.info(
                 f"Force corrected: arm={arm}, strength={new_strength}"
@@ -472,7 +465,7 @@ def _send_force_correction(arm: str, new_strength: float):
 # API
 # ═══════════════════════════════════════════════════════════
 
-app = FastAPI(title="Arm force & limits", version="4.0")
+app = FastAPI(title="Arm force & limits", version="4.1")
 
 
 @app.get("/health")
@@ -485,9 +478,9 @@ def status():
     return {
         "service": MODULE_NAME,
         "limits": {
-            "max_shoulder_deg": MAX_SHOULDER_DEG,
-            "max_elbow_deg": MAX_ELBOW_DEG,
-            "max_grip_force": MAX_GRIP_FORCE,
+            "max_shoulder_deg":    MAX_SHOULDER_DEG,
+            "max_elbow_deg":       MAX_ELBOW_DEG,
+            "max_grip_force":      MAX_GRIP_FORCE,
             "max_angle_divergence": MAX_ANGLE_DIVERGENCE,
             "max_force_divergence": MAX_FORCE_DIVERGENCE,
         },
@@ -497,104 +490,99 @@ def status():
 @app.post("/evaluate")
 def evaluate(body: EvaluateBody):
     """
-    Полная проверка безопасности.
+    Полная двухканальная проверка безопасности рук.
 
-    Двухканальная архитектура:
-      Канал А = критические датчики (истина)
-      Канал Б = прямой опрос приводов (может быть ложью)
-
-    Проверки:
+    Шаги:
     1. Получить данные по обоим каналам
     2. Trusted (канал А)
-    3. Биофизические ограничения (канал А — истина)
-    4. Биофизические ограничения (канал Б — дополнительно)
-    5. СРАВНЕНИЕ каналов А и Б (обнаружение фальсификации)
+    3. Биофизика по каналу А
+    4. Биофизика по каналу Б
+    5. Сравнение каналов (обнаружение фальсификации)
     6. Чрезмерная сила (оба канала)
-    7. Выполняют ли приводы нужное движение (оба канала)
+    7. Выполняют ли приводы команду (оба канала)
     8. Соответствие верификации нейросигнала
     9. Ограничение силы при необходимости
     """
 
-    # ─── Шаг 1: Два параллельных канала ──────────────────
-    channel_a = _get_critical_sensor_data()  # истина
-    channel_b = _poll_drives_directly()       # может быть ложь
+    # Шаг 1: Два параллельных канала
+    channel_a = _get_critical_sensor_data()
+    channel_b = _poll_drives_directly()
 
     if channel_a is None:
         return {
-            "ok": False,
-            "error": "critical_sensors_unavailable",
+            "ok":          False,
+            "error":       "critical_sensors_unavailable",
             "stop_system": False,
         }
 
-    # ─── Шаг 2: Trusted ──────────────────────────────────
+    # Шаг 2: Trusted
     if not channel_a.get("trusted", True):
         _trigger_emergency("arm_sensors_untrusted")
         return {
-            "ok": False, "stop_system": True,
-            "reason": "sensors_untrusted",
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "sensors_untrusted",
         }
 
-    # ─── Шаг 3: Биофизика по каналу А (истина) ───────────
-    angle_a = _check_biophysical_limits_from_critical(
-        channel_a, body.arm
-    )
+    # Шаг 3: Биофизика по каналу А
+    angle_a = _check_biophysical_limits_from_critical(channel_a, body.arm)
     if angle_a:
         _trigger_emergency(
             "arm_angle_exceeded_critical",
             {"detail": angle_a, "source": "critical_sensor"}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "angle_limit",
-            "detail": angle_a, "source": "critical_sensor",
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "angle_limit",
+            "detail":      angle_a,
+            "source":      "critical_sensor",
         }
 
-    # ─── Шаг 4: Биофизика по каналу Б (приводы) ─────────
-    angle_b = _check_biophysical_limits_from_drives(
-        channel_b, body.arm
-    )
+    # Шаг 4: Биофизика по каналу Б
+    angle_b = _check_biophysical_limits_from_drives(channel_b, body.arm)
     if angle_b:
         _trigger_emergency(
             "arm_angle_exceeded_drive",
             {"detail": angle_b, "source": "drive_self_report"}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "angle_limit",
-            "detail": angle_b, "source": "drive_self_report",
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "angle_limit",
+            "detail":      angle_b,
+            "source":      "drive_self_report",
         }
 
-    # ─── Шаг 5: СРАВНЕНИЕ КАНАЛОВ (фальсификация) ───────
-    falsification = _compare_channels(
-        channel_a, channel_b, body.arm
-    )
+    # Шаг 5: Сравнение каналов (фальсификация)
+    falsification = _compare_channels(channel_a, channel_b, body.arm)
     if falsification:
         _trigger_emergency(
             "arm_data_falsification",
             {"detail": falsification}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "data_falsification",
-            "detail": falsification,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "data_falsification",
+            "detail":      falsification,
         }
 
-    # ─── Шаг 6: Чрезмерная сила (оба канала) ────────────
-    force_issue = _check_excessive_force(
-        channel_a, channel_b, body.arm
-    )
+    # Шаг 6: Чрезмерная сила
+    force_issue = _check_excessive_force(channel_a, channel_b, body.arm)
     if force_issue:
         _trigger_emergency(
             "arm_force_exceeded",
             {"detail": force_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "force_exceeded",
-            "detail": force_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "force_exceeded",
+            "detail":      force_issue,
         }
 
-    # ─── Шаг 7: Выполняют ли приводы команду ────────────
+    # Шаг 7: Выполняют ли приводы команду
     exec_issue = _check_intent_execution(
         body.intent, body.arm, channel_a, channel_b
     )
@@ -604,15 +592,16 @@ def evaluate(body: EvaluateBody):
             {"intent": body.intent, "detail": exec_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "intent_not_executed",
-            "detail": exec_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "intent_not_executed",
+            "detail":      exec_issue,
         }
 
-    # ─── Шаг 8: Соответствие верификации ─────────────────
+    # Шаг 8: Соответствие верификации
     verify_issue = _check_verified_match(
-        body.intent, body.verified_intent,
-        body.strength, body.verified_strength,
+        body.intent,          body.verified_intent,
+        body.strength,        body.verified_strength,
     )
     if verify_issue:
         _trigger_emergency(
@@ -620,53 +609,53 @@ def evaluate(body: EvaluateBody):
             {"detail": verify_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "neural_mismatch",
-            "detail": verify_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "neural_mismatch",
+            "detail":      verify_issue,
         }
 
-    # ─── Шаг 9: Ограничение силы ─────────────────────────
+    # Шаг 9: Ограничение силы
     clamped_strength = float(body.strength)
-    arm_key = body.arm if body.arm in ("left", "right") else "right"
+    arm_key          = (
+        body.arm if body.arm in ("left", "right") else "right"
+    )
 
-    # Берём силу из канала А (истина)
-    a_ds = channel_a.get("drive_states", {})
-    a_force = a_ds.get(f"force_{arm_key}", {})
-    current_force = a_force.get("current_force", 0.0)
+    a_ds      = channel_a.get("drive_states", {})
+    a_force   = a_ds.get(f"force_{arm_key}", {})
+    a_current = a_force.get("current_force", 0.0)
 
-    # И из канала Б тоже
-    b_force = channel_b.get(f"force_{arm_key}", {})
+    b_force   = channel_b.get(f"force_{arm_key}", {})
     b_current = b_force.get("current_force", 0.0)
 
-    # Берём максимум из двух каналов (для безопасности)
-    real_force = max(current_force, b_current)
+    real_force = max(a_current, b_current)
+    clamped    = False
 
-    clamped = False
     if real_force > MAX_GRIP_FORCE * 0.65:
         clamped_strength *= 0.55
         clamped = True
         logger.info(
             f"Force clamped: {body.strength} → {clamped_strength} "
             f"(real_force={real_force:.1f}, "
-            f"A={current_force:.1f}, B={b_current:.1f})"
+            f"A={a_current:.1f}, B={b_current:.1f})"
         )
         if body.arm not in ("none", "both", ""):
             _send_force_correction(body.arm, clamped_strength)
 
     return {
-        "ok": True,
+        "ok":          True,
         "stop_system": False,
-        "clamped": clamped,
+        "clamped":     clamped,
         "adjusted_command": {
-            "arm": body.arm,
-            "intent": body.intent,
-            "strength": round(clamped_strength, 4),
+            "arm":           body.arm,
+            "intent":        body.intent,
+            "strength":      round(clamped_strength, 4),
             "speed_modifier": body.speed_modifier,
         },
         "channels": {
             "A_critical_sensor": "polled",
-            "B_direct_drive": "polled",
-            "comparison": "no_divergence",
+            "B_direct_drive":    "polled",
+            "comparison":        "no_divergence",
         },
         "checks_passed": [
             "trusted",

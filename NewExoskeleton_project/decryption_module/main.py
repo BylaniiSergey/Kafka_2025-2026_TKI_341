@@ -22,6 +22,8 @@ MODULE_NAME = os.getenv('MODULE_NAME', 'decryption_module')
 CRYPTO_URL = os.getenv('CRYPTO_URL',  'http://localhost:4001')
 COMMS_URL  = os.getenv('COMMS_URL',   'http://localhost:6001')
 
+REQUEST_TIMEOUT = 5.0
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
@@ -82,6 +84,16 @@ class DecryptLatestRequest(BaseModel):
     session_token: str
 
 
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
 # ── Вспомогательные функции ───────────────────────────────────────────────────
 
 def save_log(
@@ -122,9 +134,10 @@ def _call_crypto_decrypt(
 ) -> dict:
     """
     Вызывает crypto_module/decrypt для расшифровки пакета.
+    Использует get_client() — патчится в тестах.
     Возвращает {'plaintext': ..., 'verified': bool}.
     """
-    with httpx.Client(timeout=5.0) as c:
+    with get_client() as c:
         resp = c.post(f'{CRYPTO_URL}/decrypt', json={
             'ciphertext': ciphertext,
             'source':     source,
@@ -135,9 +148,25 @@ def _call_crypto_decrypt(
         return resp.json()
 
 
+def _fetch_latest_from_comms() -> dict:
+    """
+    Получает последний зашифрованный пакет из comms_module.
+    Использует get_client() — патчится в тестах.
+    """
+    with get_client() as c:
+        resp = c.get(f'{COMMS_URL}/latest_encrypted_packet')
+        if resp.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail='No encrypted packets in comms_module'
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Decryption Module", version="2.0")
+app = FastAPI(title="Decryption Module", version="2.1")
 
 
 @app.get('/health')
@@ -164,8 +193,8 @@ def session_init(body: SessionInitRequest):
         f"Decrypt session initialized for doctor={body.doctor_id}"
     )
     return {
-        'ok':            True,
-        'doctor_id':     body.doctor_id,
+        'ok':             True,
+        'doctor_id':      body.doctor_id,
         'session_active': True,
     }
 
@@ -176,8 +205,8 @@ def close_session(doctor_id: str):
     active_sessions.pop(doctor_id, None)
     logger.info(f"Session closed for doctor={doctor_id}")
     return {
-        'ok':            True,
-        'doctor_id':     doctor_id,
+        'ok':             True,
+        'doctor_id':      doctor_id,
         'session_active': False,
     }
 
@@ -194,14 +223,16 @@ def decrypt_packet(body: DecryptPacketRequest):
       → decryption_module (decrypt) → врач
 
     1. Проверяет сессию врача
-    2. Вызывает crypto_module/decrypt
+    2. Вызывает crypto_module/decrypt через get_client()
     3. Верифицирует подпись
     4. Возвращает расшифрованные данные врачу
     """
     # Шаг 1: Проверка сессии
     if not _verify_session(body.doctor_id, body.session_token):
-        save_log(body.doctor_id, body.source, False, False,
-                 error='session_not_initialized_or_mismatch')
+        save_log(
+            body.doctor_id, body.source, False, False,
+            error='session_not_initialized_or_mismatch'
+        )
         raise HTTPException(
             status_code=403,
             detail='Session not initialized or token mismatch'
@@ -215,20 +246,27 @@ def decrypt_packet(body: DecryptPacketRequest):
             source=body.source,
             target=body.target,
         )
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as e:
         error_msg = (
-            f"Signature verification failed"
+            "Signature verification failed"
             if e.response.status_code == 403
             else f"Crypto error: {e}"
         )
-        save_log(body.doctor_id, body.source, False, False,
-                 error=error_msg)
+        save_log(
+            body.doctor_id, body.source, False, False,
+            error=error_msg
+        )
         raise HTTPException(
             status_code=e.response.status_code,
             detail=error_msg
         )
     except Exception as e:
-        save_log(body.doctor_id, body.source, False, False, error=str(e))
+        save_log(
+            body.doctor_id, body.source, False, False,
+            error=str(e)
+        )
         raise HTTPException(status_code=502, detail=str(e))
 
     # Шаг 3: Парсинг расшифрованных данных
@@ -244,7 +282,7 @@ def decrypt_packet(body: DecryptPacketRequest):
     packet_type = None
     if isinstance(parsed_data, dict):
         packet_type = parsed_data.get('type') or (
-            'alarm'     if 'alarms'   in parsed_data else
+            'alarm'     if 'alarms'    in parsed_data else
             'telemetry' if 'telemetry' in parsed_data else
             'data'
         )
@@ -260,11 +298,11 @@ def decrypt_packet(body: DecryptPacketRequest):
     )
 
     return {
-        'ok':         True,
-        'doctor_id':  body.doctor_id,
-        'verified':   verified,
+        'ok':          True,
+        'doctor_id':   body.doctor_id,
+        'verified':    verified,
         'packet_type': packet_type,
-        'data':       parsed_data,
+        'data':        parsed_data,
     }
 
 
@@ -287,23 +325,17 @@ def decrypt_latest_from_comms(body: DecryptLatestRequest):
 
     # Шаг 2: Получить последний пакет из comms_module
     try:
-        with httpx.Client(timeout=5.0) as c:
-            resp = c.get(f'{COMMS_URL}/latest_encrypted_packet')
-            if resp.status_code == 404:
-                raise HTTPException(
-                    status_code=404,
-                    detail='No encrypted packets in comms_module'
-                )
-            resp.raise_for_status()
-            comms_data = resp.json()
+        comms_data = _fetch_latest_from_comms()
     except HTTPException:
         raise
     except Exception as e:
-        save_log(body.doctor_id, 'comms_module', False, False,
-                 error=str(e))
+        save_log(
+            body.doctor_id, 'comms_module', False, False,
+            error=str(e)
+        )
         raise HTTPException(status_code=502, detail=str(e))
 
-    packet = comms_data.get('packet', {})
+    packet     = comms_data.get('packet', {})
     ciphertext = packet.get('ciphertext', '')
     signature  = packet.get('signature',  '')
     source     = packet.get('source',     'control_system')
@@ -323,15 +355,22 @@ def decrypt_latest_from_comms(body: DecryptLatestRequest):
             source=source,
             target=target,
         )
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as e:
-        save_log(body.doctor_id, source, False, False,
-                 error=f"Crypto error: {e}")
+        save_log(
+            body.doctor_id, source, False, False,
+            error=f"Crypto error: {e}"
+        )
         raise HTTPException(
             status_code=e.response.status_code,
             detail=f"Crypto error: {e}"
         )
     except Exception as e:
-        save_log(body.doctor_id, source, False, False, error=str(e))
+        save_log(
+            body.doctor_id, source, False, False,
+            error=str(e)
+        )
         raise HTTPException(status_code=502, detail=str(e))
 
     plaintext = result.get('plaintext', '')

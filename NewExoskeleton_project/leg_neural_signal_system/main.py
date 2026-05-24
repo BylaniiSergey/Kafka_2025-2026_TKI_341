@@ -1,3 +1,4 @@
+# leg_neural_signal_system/main.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,7 +12,9 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
+from sqlalchemy import (
+    create_engine, Column, Integer, Float, String, DateTime
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 HOST = '0.0.0.0'
@@ -30,43 +33,49 @@ logging.basicConfig(
 logger = logging.getLogger(MODULE_NAME)
 
 DATABASE_URL = 'sqlite:///leg_neural_signals.db'
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine       = create_engine(
+    DATABASE_URL, connect_args={"check_same_thread": False}
+)
 SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+Base         = declarative_base()
 
+
+# ── Перечисления ──────────────────────────────────────────────────────────────
 
 class TargetLeg(str, Enum):
     RIGHT = "right"
-    LEFT = "left"
-    BOTH = "both"
-    NONE = "none"
+    LEFT  = "left"
+    BOTH  = "both"
+    NONE  = "none"
 
 
 class MovementIntent(str, Enum):
-    FLEX_KNEE = "flex_knee"
-    EXTEND_KNEE = "extend_knee"
-    SQUAT = "squat"
-    STAND_UP = "stand_up"
+    FLEX_KNEE    = "flex_knee"
+    EXTEND_KNEE  = "extend_knee"
+    SQUAT        = "squat"
+    STAND_UP     = "stand_up"
     MOVE_FORWARD = "move_forward"
     MOVE_BACKWARD = "move_backward"
-    TURN_LEFT = "turn_left"
-    TURN_RIGHT = "turn_right"
-    PIVOT_LEFT = "pivot_left"
-    PIVOT_RIGHT = "pivot_right"
-    STOP = "stop"
-    BRAKE = "brake"
-    SIT_DOWN = "sit_down"
-    IDLE = "idle"
+    TURN_LEFT    = "turn_left"
+    TURN_RIGHT   = "turn_right"
+    PIVOT_LEFT   = "pivot_left"
+    PIVOT_RIGHT  = "pivot_right"
+    STOP         = "stop"
+    BRAKE        = "brake"
+    SIT_DOWN     = "sit_down"
+    IDLE         = "idle"
 
+
+# ── БД ────────────────────────────────────────────────────────────────────────
 
 class SignalReadingDB(Base):
     __tablename__ = 'signal_readings'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    detected_leg = Column(String(20))
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    detected_leg    = Column(String(20))
     detected_intent = Column(String(50))
-    strength = Column(Float)
-    forwarded = Column(String(10), default='no')
-    created_at = Column(DateTime, default=datetime.utcnow)
+    strength        = Column(Float)
+    forwarded       = Column(String(10), default='no')
+    created_at      = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(engine)
@@ -74,23 +83,39 @@ Base.metadata.create_all(engine)
 VALID_SENSOR_NAMES = {
     'eeg_cz', 'eeg_c1', 'eeg_c2',
     'stump_right_quadriceps', 'stump_right_hamstring',
-    'stump_left_quadriceps', 'stump_left_hamstring',
-    'hip_right_flexor', 'hip_right_extensor',
-    'hip_left_flexor', 'hip_left_extensor',
+    'stump_left_quadriceps',  'stump_left_hamstring',
+    'hip_right_flexor',  'hip_right_extensor',
+    'hip_left_flexor',   'hip_left_extensor',
     'glute_right', 'glute_left',
-    'abs_upper', 'abs_lower',
+    'abs_upper',   'abs_lower',
 }
 
 
+# ── Pydantic модели ───────────────────────────────────────────────────────────
+
 class SignalsInput(BaseModel):
-    signals: Optional[Dict[str, float]] = None
-    patient_id: str = ""
-    posture: str = "standing"
+    signals:           Optional[Dict[str, float]] = None
+    patient_id:        str  = ""
+    posture:           str  = "standing"
     forward_to_verify: bool = True
 
 
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Анализ сигналов ───────────────────────────────────────────────────────────
+
 def normalize_signal(
-    value: float, baseline: float = 10.0, max_value: float = 150.0
+    value:     float,
+    baseline:  float = 10.0,
+    max_value: float = 150.0,
 ) -> float:
     if max_value <= baseline:
         return 0.0
@@ -98,12 +123,17 @@ def normalize_signal(
 
 
 def combined_analysis(signals: Dict[str, float]) -> Dict[str, Any]:
+    """
+    Анализирует нейросигналы нижних конечностей.
+    Определяет целевую ногу и интент движения.
+    """
     cz = normalize_signal(signals.get('eeg_cz', 0), 0, 100)
     c1 = normalize_signal(signals.get('eeg_c1', 0), 0, 100)
     c2 = normalize_signal(signals.get('eeg_c2', 0), 0, 100)
 
     threshold = 0.3
-    target = TargetLeg.NONE
+    target    = TargetLeg.NONE
+
     if cz > threshold and c1 > threshold and c2 > threshold:
         target = TargetLeg.BOTH
     elif c1 > threshold and c1 > c2:
@@ -115,22 +145,26 @@ def combined_analysis(signals: Dict[str, float]) -> Dict[str, Any]:
 
     if target == TargetLeg.NONE:
         return {
-            'target_leg': 'none', 'intent': 'idle',
-            'strength': 0.0, 'speed_modifier': 0.0,
-            'can_execute': False,
+            'target_leg':    'none',
+            'intent':        'idle',
+            'strength':      0.0,
+            'speed_modifier': 0.0,
+            'can_execute':   False,
         }
 
-    rq = normalize_signal(signals.get('stump_right_quadriceps', 0))
-    rh = normalize_signal(signals.get('stump_right_hamstring', 0))
-    lq = normalize_signal(signals.get('stump_left_quadriceps', 0))
-    lh = normalize_signal(signals.get('stump_left_hamstring', 0))
-    rhf = normalize_signal(signals.get('hip_right_flexor', 0))
-    rhe = normalize_signal(signals.get('hip_right_extensor', 0))
-    lhf = normalize_signal(signals.get('hip_left_flexor', 0))
-    lhe = normalize_signal(signals.get('hip_left_extensor', 0))
-    au = normalize_signal(signals.get('abs_upper', 0))
-    al = normalize_signal(signals.get('abs_lower', 0))
+    # Мышечные сигналы
+    rq  = normalize_signal(signals.get('stump_right_quadriceps', 0))
+    rh  = normalize_signal(signals.get('stump_right_hamstring',  0))
+    lq  = normalize_signal(signals.get('stump_left_quadriceps',  0))
+    lh  = normalize_signal(signals.get('stump_left_hamstring',   0))
+    rhf = normalize_signal(signals.get('hip_right_flexor',       0))
+    rhe = normalize_signal(signals.get('hip_right_extensor',     0))
+    lhf = normalize_signal(signals.get('hip_left_flexor',        0))
+    lhe = normalize_signal(signals.get('hip_left_extensor',      0))
+    au  = normalize_signal(signals.get('abs_upper',              0))
+    al  = normalize_signal(signals.get('abs_lower',              0))
 
+    # Определение интента
     intent = MovementIntent.IDLE
     if au > 0.7 and al > 0.7:
         intent = MovementIntent.BRAKE
@@ -149,44 +183,85 @@ def combined_analysis(signals: Dict[str, float]) -> Dict[str, Any]:
     elif lhf > 0.5 and rhe > 0.3:
         intent = MovementIntent.TURN_RIGHT
 
-    gr = normalize_signal(signals.get('glute_right', 0))
-    gl = normalize_signal(signals.get('glute_left', 0))
-    glute = (gr + gl) / 2 if target == TargetLeg.BOTH else (
-        gr if target == TargetLeg.RIGHT else gl
+    # Сила и скорость по ягодичным мышцам
+    gr     = normalize_signal(signals.get('glute_right', 0))
+    gl     = normalize_signal(signals.get('glute_left',  0))
+    glute  = (
+        (gr + gl) / 2 if target == TargetLeg.BOTH else
+        gr if target == TargetLeg.RIGHT else
+        gl
     )
-    strength = max(0.1, min(1.0, glute))
-    speed_modifier = 1.5 if strength > 0.7 else (
-        1.0 if strength > 0.4 else 0.6
+    strength      = max(0.1, min(1.0, glute))
+    speed_modifier = (
+        1.5 if strength > 0.7 else
+        1.0 if strength > 0.4 else
+        0.6
     )
 
     can_execute = intent != MovementIntent.IDLE
 
     return {
-        'target_leg': target.value,
-        'intent': intent.value,
-        'strength': round(strength, 3),
+        'target_leg':    target.value,
+        'intent':        intent.value,
+        'strength':      round(strength, 3),
         'speed_modifier': round(speed_modifier, 2),
-        'can_execute': can_execute,
+        'can_execute':   can_execute,
     }
 
 
-app = FastAPI(title="Leg Neural Signal System", version="3.0")
+def _forward_to_verify(
+    result:     Dict[str, Any],
+    patient_id: str,
+    posture:    str,
+) -> tuple[str, Optional[dict]]:
+    """
+    Пересылает результат анализа в neural_verify_lower.
+    Использует get_client() — патчится в тестах.
+    Возвращает (forwarded_status, verify_result).
+    """
+    try:
+        with get_client() as c:
+            resp = c.post(f"{NEURAL_VERIFY_URL}/process", json={
+                "target_leg":    result['target_leg'],
+                "intent":        result['intent'],
+                "strength":      result['strength'],
+                "speed_modifier": result['speed_modifier'],
+                "can_execute":   result['can_execute'],
+                "patient_id":    patient_id,
+                "posture":       posture,
+            })
+            return 'yes', resp.json()
+    except Exception as e:
+        logger.error(f"Forward to verify failed: {e}")
+        return 'error', {"error": str(e)}
+
+
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Leg Neural Signal System", version="3.1")
 
 
 @app.post('/analyze')
 def analyze_signals(body: SignalsInput = SignalsInput()):
-    if body.signals:
-        signals = body.signals
-    else:
+    """
+    Анализирует нейросигналы нижних конечностей.
+
+    Цепочка при can_execute=True и forward_to_verify=True:
+      leg_neural_signal → neural_verify_lower → leg_force_limits → leg_movement
+    """
+    if not body.signals:
         raise HTTPException(400, 'No signals provided')
 
-    result = combined_analysis(signals)
+    result = combined_analysis(body.signals)
+
     logger.info(
         f"Analysis: leg={result['target_leg']}, "
         f"intent={result['intent']}, strength={result['strength']}"
     )
 
-    session = SessionLocal()
+    # Сохраняем в БД
+    session   = SessionLocal()
+    forwarded = 'no'
     try:
         session.add(SignalReadingDB(
             detected_leg=result['target_leg'],
@@ -197,29 +272,20 @@ def analyze_signals(body: SignalsInput = SignalsInput()):
     finally:
         session.close()
 
-    # Пересылаем в neural_verify_lower → leg_force_limits → leg_movement
+    # Пересылаем в neural_verify_lower
     verify_result = None
-    forwarded = 'no'
     if body.forward_to_verify and result['can_execute']:
-        try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-                resp = c.post(f"{NEURAL_VERIFY_URL}/process", json={
-                    "target_leg": result['target_leg'],
-                    "intent": result['intent'],
-                    "strength": result['strength'],
-                    "speed_modifier": result['speed_modifier'],
-                    "can_execute": result['can_execute'],
-                    "patient_id": body.patient_id,
-                    "posture": body.posture,
-                })
-                verify_result = resp.json()
-                forwarded = 'yes'
-        except Exception as e:
-            logger.error(f"Forward to verify failed: {e}")
-            verify_result = {"error": str(e)}
-            forwarded = 'error'
+        forwarded, verify_result = _forward_to_verify(
+            result=result,
+            patient_id=body.patient_id,
+            posture=body.posture,
+        )
+        logger.info(
+            f"Forwarded to verify: status={forwarded}, "
+            f"result={verify_result}"
+        )
 
-    result['forwarded'] = forwarded
+    result['forwarded']     = forwarded
     result['verify_result'] = verify_result
     return result
 

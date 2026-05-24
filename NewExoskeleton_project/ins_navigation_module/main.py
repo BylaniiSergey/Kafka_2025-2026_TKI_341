@@ -27,46 +27,45 @@ POSITION_CHECK_URL = os.getenv(
 )
 REQUEST_TIMEOUT = 5.0
 
-# Допустимая зона: квадрат ±5 шагов от нулевой точки
 ZONE_LIMIT = 5
-STEP_SIZE = 1.0
+STEP_SIZE  = 1.0
 
 DATABASE_URL = 'sqlite:///ins_navigation.db'
-engine = create_engine(
+engine       = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
 )
 SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+Base         = declarative_base()
 
 
 class INSPositionDB(Base):
     __tablename__ = 'ins_positions'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    x = Column(Float)
-    y = Column(Float)
-    intent = Column(String(50), nullable=True)
-    in_zone = Column(Boolean)
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    x          = Column(Float)
+    y          = Column(Float)
+    intent     = Column(String(50), nullable=True)
+    in_zone    = Column(Boolean)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(engine)
 
 ins_state = {
-    'x': 0.0,
-    'y': 0.0,
+    'x':       0.0,
+    'y':       0.0,
     'in_zone': True,
     'step_count': {
-        'move_forward': 0,
+        'move_forward':  0,
         'move_backward': 0,
-        'turn_left': 0,
-        'turn_right': 0,
-    }
+        'turn_left':     0,
+        'turn_right':    0,
+    },
 }
 
 INTENT_TO_VECTOR = {
-    'move_forward':  (0.0,  STEP_SIZE),
-    'move_backward': (0.0, -STEP_SIZE),
+    'move_forward':  (0.0,   STEP_SIZE),
+    'move_backward': (0.0,  -STEP_SIZE),
     'turn_left':     (-STEP_SIZE, 0.0),
     'turn_right':    ( STEP_SIZE, 0.0),
     'pivot_left':    (-STEP_SIZE, 0.0),
@@ -74,15 +73,29 @@ INTENT_TO_VECTOR = {
 }
 
 
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Pydantic модели ───────────────────────────────────────────────────────────
+
 class MovementEventRequest(BaseModel):
     intent: str
-    steps: int = 1
+    steps:  int = 1
 
 
 class ManualPositionRequest(BaseModel):
     x: float
     y: float
 
+
+# ── Вспомогательные функции ───────────────────────────────────────────────────
 
 def is_in_zone(x: float, y: float) -> bool:
     return abs(x) <= ZONE_LIMIT and abs(y) <= ZONE_LIMIT
@@ -95,14 +108,38 @@ def save_position(intent: str = None):
             x=ins_state['x'],
             y=ins_state['y'],
             intent=intent,
-            in_zone=ins_state['in_zone']
+            in_zone=ins_state['in_zone'],
         ))
         session.commit()
     finally:
         session.close()
 
 
-app = FastAPI(title="INS Navigation Module", version="1.0")
+def _notify_position_check(in_zone: bool, intent: str) -> dict:
+    """
+    Уведомляет position_check_module об обновлении позиции.
+    Использует get_client() — патчится в тестах.
+    """
+    try:
+        with get_client() as c:
+            resp = c.post(
+                f'{POSITION_CHECK_URL}/ins_update',
+                json={
+                    'x':       ins_state['x'],
+                    'y':       ins_state['y'],
+                    'in_zone': in_zone,
+                    'intent':  intent,
+                },
+            )
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Position check notify failed: {e}")
+        return {'error': str(e)}
+
+
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="INS Navigation Module", version="1.1")
 
 
 @app.get('/health')
@@ -113,12 +150,12 @@ def health():
 @app.get('/position')
 def get_position():
     return {
-        'service': MODULE_NAME,
-        'x': ins_state['x'],
-        'y': ins_state['y'],
-        'in_zone': ins_state['in_zone'],
+        'service':    MODULE_NAME,
+        'x':          ins_state['x'],
+        'y':          ins_state['y'],
+        'in_zone':    ins_state['in_zone'],
         'zone_limit': ZONE_LIMIT,
-        'step_count': ins_state['step_count']
+        'step_count': ins_state['step_count'],
     }
 
 
@@ -126,14 +163,19 @@ def get_position():
 def receive_movement_event(body: MovementEventRequest):
     """
     Принимает событие движения от модулей ног.
-    ИНС — эталонный источник позиции (всегда прав).
+    ИНС — эталонный источник позиции.
+    Уведомляет position_check_module через get_client().
     """
     dx, dy = INTENT_TO_VECTOR.get(body.intent, (0.0, 0.0))
+
     if dx == 0.0 and dy == 0.0:
         return {
-            'ok': True,
+            'ok':      True,
             'message': f'Intent {body.intent} does not affect position',
-            'position': {'x': ins_state['x'], 'y': ins_state['y']}
+            'position': {
+                'x': ins_state['x'],
+                'y': ins_state['y'],
+            },
         }
 
     for _ in range(body.steps):
@@ -143,7 +185,7 @@ def receive_movement_event(body: MovementEventRequest):
     if body.intent in ins_state['step_count']:
         ins_state['step_count'][body.intent] += body.steps
 
-    in_zone = is_in_zone(ins_state['x'], ins_state['y'])
+    in_zone              = is_in_zone(ins_state['x'], ins_state['y'])
     ins_state['in_zone'] = in_zone
 
     logger.info(
@@ -154,61 +196,47 @@ def receive_movement_event(body: MovementEventRequest):
 
     save_position(body.intent)
 
-    # Уведомить position_check_module
-    notify_result = None
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-            resp = c.post(
-                f'{POSITION_CHECK_URL}/ins_update',
-                json={
-                    'x': ins_state['x'],
-                    'y': ins_state['y'],
-                    'in_zone': in_zone,
-                    'intent': body.intent
-                }
-            )
-            notify_result = resp.json()
-    except Exception as e:
-        logger.error(f"Position check notify failed: {e}")
-        notify_result = {'error': str(e)}
+    notify_result = _notify_position_check(in_zone, body.intent)
 
     return {
-        'ok': True,
+        'ok':      True,
         'position': {
             'x': ins_state['x'],
-            'y': ins_state['y']
+            'y': ins_state['y'],
         },
-        'in_zone': in_zone,
-        'intent': body.intent,
-        'steps': body.steps,
-        'position_check_notified': notify_result
+        'in_zone':  in_zone,
+        'intent':   body.intent,
+        'steps':    body.steps,
+        'position_check_notified': notify_result,
     }
 
 
 @app.post('/set_position')
 def set_position(body: ManualPositionRequest):
-    ins_state['x'] = body.x
-    ins_state['y'] = body.y
+    """Ручная установка позиции (для тестов/калибровки)."""
+    ins_state['x']       = body.x
+    ins_state['y']       = body.y
     ins_state['in_zone'] = is_in_zone(body.x, body.y)
     save_position('manual_set')
     return {
-        'ok': True,
+        'ok':       True,
         'position': {'x': ins_state['x'], 'y': ins_state['y']},
-        'in_zone': ins_state['in_zone']
+        'in_zone':  ins_state['in_zone'],
     }
 
 
 @app.post('/reset_position')
 def reset_position():
-    ins_state['x'] = 0.0
-    ins_state['y'] = 0.0
-    ins_state['in_zone'] = True
+    """Сбросить позицию в центр зоны (0, 0)."""
+    ins_state['x']          = 0.0
+    ins_state['y']          = 0.0
+    ins_state['in_zone']    = True
     ins_state['step_count'] = {k: 0 for k in ins_state['step_count']}
     save_position('reset')
     return {
-        'ok': True,
+        'ok':       True,
         'position': {'x': 0.0, 'y': 0.0},
-        'in_zone': True
+        'in_zone':  True,
     }
 
 
@@ -222,13 +250,13 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             .limit(limit).all()
         )
         return [{
-            'id': p.id,
-            'x': p.x,
-            'y': p.y,
-            'intent': p.intent,
-            'in_zone': p.in_zone,
+            'id':         p.id,
+            'x':          p.x,
+            'y':          p.y,
+            'intent':     p.intent,
+            'in_zone':    p.in_zone,
             'created_at': p.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            if p.created_at else None
+                          if p.created_at else None,
         } for p in positions]
     finally:
         session.close()

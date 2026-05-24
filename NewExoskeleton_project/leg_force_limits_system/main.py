@@ -1,3 +1,4 @@
+# leg_force_limits_system/main.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,35 +23,33 @@ CRITICAL_SENSORS_URL = os.getenv(
 )
 
 # Канал Б: прямой опрос приводов
-KNEE_BELT_URL = os.getenv("KNEE_BELT_URL", "http://localhost:9003")
-TRACK_SYSTEM_URL = os.getenv("TRACK_SYSTEM_URL", "http://localhost:9004")
-LEG_FORCE_CONTROL_URL = os.getenv(
-    "LEG_FORCE_CONTROL_URL", "http://localhost:9006"
-)
+KNEE_BELT_URL         = os.getenv("KNEE_BELT_URL",         "http://localhost:9003")
+TRACK_SYSTEM_URL      = os.getenv("TRACK_SYSTEM_URL",      "http://localhost:9004")
+LEG_FORCE_CONTROL_URL = os.getenv("LEG_FORCE_CONTROL_URL", "http://localhost:9006")
 
 REQUEST_TIMEOUT = 5.0
 
-MAX_KNEE_DEG = float(os.getenv("MAX_KNEE_DEG", "170"))
-MAX_KNEE_TORQUE = float(os.getenv("MAX_KNEE_TORQUE", "150"))
-MAX_TRACK_SPEED = float(os.getenv("MAX_TRACK_SPEED", "1.5"))
+MAX_KNEE_DEG        = float(os.getenv("MAX_KNEE_DEG",        "170"))
+MAX_KNEE_TORQUE     = float(os.getenv("MAX_KNEE_TORQUE",     "150"))
+MAX_TRACK_SPEED     = float(os.getenv("MAX_TRACK_SPEED",     "1.5"))
 MAX_ANGLE_DIVERGENCE = float(os.getenv("MAX_ANGLE_DIVERGENCE", "15.0"))
 MAX_TORQUE_DIVERGENCE = float(os.getenv("MAX_TORQUE_DIVERGENCE", "40.0"))
 
 INTENT_TO_EXPECTED = {
-    "flex_knee": ["knee"],
-    "extend_knee": ["knee"],
-    "squat": ["knee"],
-    "stand_up": ["knee"],
-    "sit_down": ["knee"],
+    "flex_knee":    ["knee"],
+    "extend_knee":  ["knee"],
+    "squat":        ["knee"],
+    "stand_up":     ["knee"],
+    "sit_down":     ["knee"],
     "move_forward": ["track"],
     "move_backward": ["track"],
-    "turn_left": ["track"],
-    "turn_right": ["track"],
-    "pivot_left": ["track"],
-    "pivot_right": ["track"],
-    "stop": ["track"],
-    "brake": ["track", "knee"],
-    "idle": [],
+    "turn_left":    ["track"],
+    "turn_right":   ["track"],
+    "pivot_left":   ["track"],
+    "pivot_right":  ["track"],
+    "stop":         ["track"],
+    "brake":        ["track", "knee"],
+    "idle":         [],
 }
 
 logging.basicConfig(
@@ -63,13 +62,25 @@ bus = EventBus(client_id=MODULE_NAME)
 
 
 class EvaluateBody(BaseModel):
-    intent: str = "idle"
-    leg: str = "none"
-    strength: float = 0.0
-    speed_modifier: float = 0.0
-    verified_intent: Optional[str] = None
+    intent:            str   = "idle"
+    leg:               str   = "none"
+    strength:          float = 0.0
+    speed_modifier:    float = 0.0
+    verified_intent:   Optional[str]   = None
     verified_strength: Optional[float] = None
 
+
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Emergency ─────────────────────────────────────────────────────────────────
 
 def _trigger_emergency(reason: str, details: Dict = None):
     payload = {"source": MODULE_NAME, "reason": reason}
@@ -84,8 +95,12 @@ def _trigger_emergency(reason: str, details: Dict = None):
 # ═══════════════════════════════════════════════════════════
 
 def _get_critical_sensor_data() -> Optional[Dict]:
+    """
+    Получает данные от критических датчиков (канал А).
+    Использует get_client() — патчится в тестах.
+    """
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             resp = c.get(f"{CRITICAL_SENSORS_URL}/snapshot")
             resp.raise_for_status()
             return resp.json()
@@ -99,62 +114,68 @@ def _get_critical_sensor_data() -> Optional[Dict]:
 # ═══════════════════════════════════════════════════════════
 
 def _poll_drives_directly() -> Dict[str, Any]:
+    """
+    Опрашивает приводы напрямую (канал Б).
+    Использует get_client() — патчится в тестах.
+    """
     drives = {}
 
-    # Коленный пояс
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
-            for leg in ["left", "right"]:
+    with get_client() as c:
+        # Коленный пояс
+        for leg in ["left", "right"]:
+            try:
                 resp = c.get(f"{KNEE_BELT_URL}/positions/{leg}")
                 if resp.status_code == 200:
                     data = resp.json()
                     drives[f"knee_{leg}"] = {
-                        "angle": data.get("angle", 0.0),
+                        "angle":     data.get("angle", 0.0),
                         "is_locked": data.get("is_locked", False),
-                        "status": data.get("status", "unknown"),
+                        "status":    data.get("status", "unknown"),
                     }
-    except Exception as e:
-        logger.warning(f"Cannot poll knee_belt directly: {e}")
-        drives["knee_error"] = str(e)
+            except Exception as e:
+                logger.warning(f"Cannot poll knee/{leg}: {e}")
+                drives[f"knee_{leg}_error"] = str(e)
 
-    # Гусеницы
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        # Гусеницы
+        try:
             resp = c.get(f"{TRACK_SYSTEM_URL}/status")
             if resp.status_code == 200:
                 data = resp.json()
                 drives["track"] = {
-                    "status": data.get("status", "unknown"),
-                    "left_speed": data.get(
+                    "status":      data.get("status", "unknown"),
+                    "left_speed":  data.get(
                         "left_track", {}
                     ).get("speed", 0.0),
                     "right_speed": data.get(
                         "right_track", {}
                     ).get("speed", 0.0),
                 }
-    except Exception as e:
-        logger.warning(f"Cannot poll track_system directly: {e}")
-        drives["track_error"] = str(e)
+        except Exception as e:
+            logger.warning(f"Cannot poll track: {e}")
+            drives["track_error"] = str(e)
 
-    # Контроль силы ног
-    try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        # Контроль силы ног
+        try:
             resp = c.get(f"{LEG_FORCE_CONTROL_URL}/status")
             if resp.status_code == 200:
                 data = resp.json()
-                for loc in ["left_knee", "right_knee",
-                            "left_track", "right_track"]:
+                for loc in [
+                    "left_knee", "right_knee",
+                    "left_track", "right_track",
+                ]:
                     if loc in data:
                         drives[f"force_{loc}"] = {
-                            "current_torque":
-                                data[loc].get("current_torque", 0.0),
-                            "current_force":
-                                data[loc].get("current_force", 0.0),
-                            "status":
-                                data[loc].get("status", "unknown"),
+                            "current_torque": data[loc].get(
+                                "current_torque", 0.0
+                            ),
+                            "current_force": data[loc].get(
+                                "current_force", 0.0
+                            ),
+                            "status": data[loc].get("status", "unknown"),
                         }
-    except Exception as e:
-        logger.warning(f"Cannot poll leg_force directly: {e}")
+        except Exception as e:
+            logger.warning(f"Cannot poll leg_force: {e}")
+            drives["force_error"] = str(e)
 
     return drives
 
@@ -168,6 +189,7 @@ def _compare_channels(
 ) -> Optional[str]:
     """
     Сравнивает данные о коленях и гусеницах между каналами.
+    Возвращает описание расхождения или None.
     """
     a_drives = channel_a.get("drive_states", {})
 
@@ -197,7 +219,7 @@ def _compare_channels(
             a_speed = a_track.get(side, 0.0)
             b_speed = b_track.get(side, 0.0)
             div = abs(float(a_speed) - float(b_speed))
-            if div > 0.5:  # > 0.5 m/s расхождение
+            if div > 0.5:
                 return (
                     f"track.{side}: "
                     f"critical_sensor={a_speed:.2f}, "
@@ -208,10 +230,12 @@ def _compare_channels(
     # Гусеницы: статус
     a_st = a_track.get("status")
     b_st = b_track.get("status")
-    if (a_st and b_st
-            and a_st != b_st
-            and a_st != "unknown"
-            and b_st != "unknown"):
+    if (
+        a_st and b_st
+        and a_st != b_st
+        and a_st != "unknown"
+        and b_st != "unknown"
+    ):
         return (
             f"track.status: "
             f"critical_sensor={a_st}, "
@@ -243,25 +267,30 @@ def _compare_channels(
 # ПРОВЕРКИ БЕЗОПАСНОСТИ
 # ═══════════════════════════════════════════════════════════
 
-def _check_knee_angles(channel_a: Dict, channel_b: Dict) -> Optional[str]:
-    """Проверяет углы коленей из ОБОИХ каналов."""
-    # Канал А
+def _check_knee_angles(
+    channel_a: Dict, channel_b: Dict
+) -> Optional[str]:
+    """Проверяет углы коленей из обоих каналов."""
     a_ds = channel_a.get("drive_states", {})
-    for side in ["left", "right"]:
-        angle = abs(a_ds.get(f"knee_{side}", {}).get("angle", 0.0))
-        if angle > MAX_KNEE_DEG:
-            return (
-                f"knee_{side}={angle:.1f} > {MAX_KNEE_DEG} "
-                f"(critical sensor)"
-            )
 
-    # Канал Б
     for side in ["left", "right"]:
-        angle = abs(channel_b.get(f"knee_{side}", {}).get("angle", 0.0))
-        if angle > MAX_KNEE_DEG:
+        # Канал А
+        angle_a = abs(
+            a_ds.get(f"knee_{side}", {}).get("angle", 0.0)
+        )
+        if angle_a > MAX_KNEE_DEG:
             return (
-                f"knee_{side}={angle:.1f} > {MAX_KNEE_DEG} "
-                f"(drive self-report)"
+                f"knee_{side}={angle_a:.1f} > {MAX_KNEE_DEG} "
+                "(critical sensor)"
+            )
+        # Канал Б
+        angle_b = abs(
+            channel_b.get(f"knee_{side}", {}).get("angle", 0.0)
+        )
+        if angle_b > MAX_KNEE_DEG:
+            return (
+                f"knee_{side}={angle_b:.1f} > {MAX_KNEE_DEG} "
+                "(drive self-report)"
             )
 
     return None
@@ -270,11 +299,12 @@ def _check_knee_angles(channel_a: Dict, channel_b: Dict) -> Optional[str]:
 def _check_track_speed(
     channel_a: Dict, channel_b: Dict
 ) -> Optional[str]:
-    """Проверяет скорость гусениц из ОБОИХ каналов."""
-    for label, source in [
-        ("critical_sensor", channel_a.get("drive_states", {}).get("track", {})),
+    """Проверяет скорость гусениц из обоих каналов."""
+    sources = [
+        ("critical_sensor",   channel_a.get("drive_states", {}).get("track", {})),
         ("drive_self_report", channel_b.get("track", {})),
-    ]:
+    ]
+    for label, source in sources:
         for side in ["left_speed", "right_speed"]:
             speed = abs(source.get(side, 0.0))
             if speed > MAX_TRACK_SPEED:
@@ -288,27 +318,25 @@ def _check_track_speed(
 def _check_torque(
     channel_a: Dict, channel_b: Dict
 ) -> Optional[str]:
-    """Проверяет крутящий момент из ОБОИХ каналов."""
+    """Проверяет крутящий момент из обоих каналов."""
     a_ds = channel_a.get("drive_states", {})
+
     for side in ["left_knee", "right_knee"]:
-        # Канал А
         a_torque = abs(
             a_ds.get(f"force_{side}", {}).get("current_torque", 0.0)
         )
         if a_torque > MAX_KNEE_TORQUE:
             return (
                 f"{side}_torque={a_torque:.1f} > {MAX_KNEE_TORQUE} "
-                f"(critical sensor)"
+                "(critical sensor)"
             )
-
-        # Канал Б
         b_torque = abs(
             channel_b.get(f"force_{side}", {}).get("current_torque", 0.0)
         )
         if b_torque > MAX_KNEE_TORQUE:
             return (
                 f"{side}_torque={b_torque:.1f} > {MAX_KNEE_TORQUE} "
-                f"(drive self-report)"
+                "(drive self-report)"
             )
 
     return None
@@ -316,14 +344,15 @@ def _check_torque(
 
 def _check_intent_execution(
     intent: str, leg: str,
-    channel_a: Dict, channel_b: Dict
+    channel_a: Dict, channel_b: Dict,
 ) -> Optional[str]:
+    """Проверяет выполнение команды приводами по обоим каналам."""
     expected = INTENT_TO_EXPECTED.get(intent, [])
     if not expected or intent == "idle":
         return None
 
     violations = []
-    a_ds = channel_a.get("drive_states", {})
+    a_ds       = channel_a.get("drive_states", {})
 
     for drive_type in expected:
         if drive_type == "knee":
@@ -354,9 +383,12 @@ def _check_intent_execution(
 
 
 def _check_verified_match(
-    intent: str, verified_intent: Optional[str],
-    strength: float, verified_strength: Optional[float],
+    intent:            str,
+    verified_intent:   Optional[str],
+    strength:          float,
+    verified_strength: Optional[float],
 ) -> Optional[str]:
+    """Проверяет соответствие верификации нейросигнала."""
     if verified_intent is None:
         return None
     if verified_intent != intent:
@@ -372,11 +404,12 @@ def _check_verified_match(
 
 
 def _send_torque_correction(leg: str, new_strength: float):
+    """Отправляет корректировку момента в leg_force_control."""
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             c.post(f"{LEG_FORCE_CONTROL_URL}/apply_knee_torque", json={
-                "leg": leg,
-                "action": "corrected",
+                "leg":          leg,
+                "action":       "corrected",
                 "target_torque": new_strength * MAX_KNEE_TORQUE,
             })
             logger.info(
@@ -390,7 +423,7 @@ def _send_torque_correction(leg: str, new_strength: float):
 # API
 # ═══════════════════════════════════════════════════════════
 
-app = FastAPI(title="Leg force & limits", version="4.0")
+app = FastAPI(title="Leg force & limits", version="4.1")
 
 
 @app.get("/health")
@@ -403,9 +436,9 @@ def status():
     return {
         "service": MODULE_NAME,
         "limits": {
-            "max_knee_deg": MAX_KNEE_DEG,
-            "max_knee_torque": MAX_KNEE_TORQUE,
-            "max_track_speed": MAX_TRACK_SPEED,
+            "max_knee_deg":        MAX_KNEE_DEG,
+            "max_knee_torque":     MAX_KNEE_TORQUE,
+            "max_track_speed":     MAX_TRACK_SPEED,
             "max_angle_divergence": MAX_ANGLE_DIVERGENCE,
             "max_torque_divergence": MAX_TORQUE_DIVERGENCE,
         },
@@ -417,74 +450,78 @@ def evaluate(body: EvaluateBody):
     """
     Двухканальная проверка безопасности ног.
 
-    Канал А = критические датчики (тоже опрашивают приводы)
-    Канал Б = прямой опрос приводов из этого модуля
-
+    Шаги:
     1. Два параллельных опроса
     2. Trusted
     3. Углы коленей (оба канала)
     4. Крутящий момент (оба канала)
     5. Скорость гусениц (оба канала)
-    6. СРАВНЕНИЕ каналов (обнаружение фальсификации)
+    6. Сравнение каналов (обнаружение фальсификации)
     7. Выполняют ли приводы команду (оба канала)
     8. Соответствие верификации нейросигнала
     9. Ограничение силы
     """
 
-    # ─── Шаг 1: Два канала ───────────────────────────────
+    # Шаг 1: Два канала
     channel_a = _get_critical_sensor_data()
     channel_b = _poll_drives_directly()
 
     if channel_a is None:
         return {
-            "ok": False,
-            "error": "critical_sensors_unavailable",
+            "ok":          False,
+            "error":       "critical_sensors_unavailable",
             "stop_system": False,
         }
 
-    # ─── Шаг 2: Trusted ─────────────────────────────────
+    # Шаг 2: Trusted
     if not channel_a.get("trusted", True):
         _trigger_emergency("leg_sensors_untrusted")
         return {
-            "ok": False, "stop_system": True,
-            "reason": "sensors_untrusted",
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "sensors_untrusted",
         }
 
-    # ─── Шаг 3: Углы коленей ────────────────────────────
+    # Шаг 3: Углы коленей
     angle_issue = _check_knee_angles(channel_a, channel_b)
     if angle_issue:
         _trigger_emergency(
             "leg_angle_exceeded", {"detail": angle_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "angle_limit", "detail": angle_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "angle_limit",
+            "detail":      angle_issue,
         }
 
-    # ─── Шаг 4: Крутящий момент ──────────────────────────
+    # Шаг 4: Крутящий момент
     torque_issue = _check_torque(channel_a, channel_b)
     if torque_issue:
         _trigger_emergency(
             "leg_torque_exceeded", {"detail": torque_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "torque_exceeded", "detail": torque_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "torque_exceeded",
+            "detail":      torque_issue,
         }
 
-    # ─── Шаг 5: Скорость гусениц ────────────────────────
+    # Шаг 5: Скорость гусениц
     speed_issue = _check_track_speed(channel_a, channel_b)
     if speed_issue:
         _trigger_emergency(
             "leg_speed_exceeded", {"detail": speed_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "track_speed_exceeded",
-            "detail": speed_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "track_speed_exceeded",
+            "detail":      speed_issue,
         }
 
-    # ─── Шаг 6: СРАВНЕНИЕ КАНАЛОВ ────────────────────────
+    # Шаг 6: Сравнение каналов
     falsification = _compare_channels(channel_a, channel_b)
     if falsification:
         _trigger_emergency(
@@ -492,12 +529,13 @@ def evaluate(body: EvaluateBody):
             {"detail": falsification}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "data_falsification",
-            "detail": falsification,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "data_falsification",
+            "detail":      falsification,
         }
 
-    # ─── Шаг 7: Выполняют ли приводы команду ────────────
+    # Шаг 7: Выполняют ли приводы команду
     exec_issue = _check_intent_execution(
         body.intent, body.leg, channel_a, channel_b
     )
@@ -507,30 +545,32 @@ def evaluate(body: EvaluateBody):
             {"intent": body.intent, "detail": exec_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "intent_not_executed",
-            "detail": exec_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "intent_not_executed",
+            "detail":      exec_issue,
         }
 
-    # ─── Шаг 8: Соответствие верификации ─────────────────
+    # Шаг 8: Соответствие верификации
     verify_issue = _check_verified_match(
-        body.intent, body.verified_intent,
-        body.strength, body.verified_strength,
+        body.intent,          body.verified_intent,
+        body.strength,        body.verified_strength,
     )
     if verify_issue:
         _trigger_emergency(
             "leg_neural_mismatch", {"detail": verify_issue}
         )
         return {
-            "ok": False, "stop_system": True,
-            "reason": "neural_mismatch",
-            "detail": verify_issue,
+            "ok":          False,
+            "stop_system": True,
+            "reason":      "neural_mismatch",
+            "detail":      verify_issue,
         }
 
-    # ─── Шаг 9: Ограничение силы ─────────────────────────
+    # Шаг 9: Ограничение силы
     clamped_strength = float(body.strength)
-    spd = abs(float(body.speed_modifier))
-    clamped = False
+    spd              = abs(float(body.speed_modifier))
+    clamped          = False
 
     if spd > 85 and clamped_strength > 70:
         clamped_strength *= 0.5
@@ -542,19 +582,19 @@ def evaluate(body: EvaluateBody):
             _send_torque_correction(body.leg, clamped_strength / 100)
 
     return {
-        "ok": True,
+        "ok":          True,
         "stop_system": False,
-        "clamped": clamped,
+        "clamped":     clamped,
         "adjusted_command": {
-            "leg": body.leg,
-            "intent": body.intent,
-            "strength": round(clamped_strength, 4),
+            "leg":           body.leg,
+            "intent":        body.intent,
+            "strength":      round(clamped_strength, 4),
             "speed_modifier": body.speed_modifier,
         },
         "channels": {
             "A_critical_sensor": "polled",
-            "B_direct_drive": "polled",
-            "comparison": "no_divergence",
+            "B_direct_drive":    "polled",
+            "comparison":        "no_divergence",
         },
         "checks_passed": [
             "trusted",

@@ -1,3 +1,4 @@
+# critical_sensors_legs/main.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +19,6 @@ KNEE_BELT_URL         = os.getenv("KNEE_BELT_URL",         "http://localhost:900
 TRACK_SYSTEM_URL      = os.getenv("TRACK_SYSTEM_URL",      "http://localhost:9004")
 LEG_FORCE_CONTROL_URL = os.getenv("LEG_FORCE_CONTROL_URL", "http://localhost:9006")
 
-# Уменьшаем таймаут: 6 запросов × 0.5с = 3с вместо 18с
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "0.5"))
 
 logging.basicConfig(
@@ -30,18 +30,34 @@ logger = logging.getLogger(MODULE_NAME)
 _trusted = True
 
 
+# ── Pydantic модели ───────────────────────────────────────────────────────────
+
 class TrustedUpdate(BaseModel):
     trusted: Optional[bool] = None
 
 
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    Таймаут 0.5с — при недоступном приводе не зависаем надолго.
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Опрос приводов ────────────────────────────────────────────────────────────
+
 def _poll_drive_states() -> Dict[str, Any]:
     """
     Опрашивает реальное состояние приводов ног.
-    Один клиент на все запросы, таймаут 0.5с.
+    Использует get_client() — патчится в тестах.
+    Один клиент на все запросы.
     """
     state = {}
 
-    with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+    with get_client() as c:
 
         # Коленный пояс
         for leg in ["left", "right"]:
@@ -50,11 +66,12 @@ def _poll_drive_states() -> Dict[str, Any]:
                 if resp.status_code == 200:
                     data = resp.json()
                     state[f"knee_{leg}"] = {
-                        "angle":     data.get("angle", 0.0),
+                        "angle":     data.get("angle",     0.0),
                         "is_locked": data.get("is_locked", False),
-                        "status":    data.get("status", "unknown"),
+                        "status":    data.get("status",    "unknown"),
                     }
             except Exception as e:
+                logger.debug(f"Cannot poll knee/{leg}: {e}")
                 state[f"knee_{leg}_error"] = str(e)
 
         # Гусеницы
@@ -63,8 +80,8 @@ def _poll_drive_states() -> Dict[str, Any]:
             if resp.status_code == 200:
                 data = resp.json()
                 state["track"] = {
-                    "status":      data.get("status", "unknown"),
-                    "left_speed":  data.get(
+                    "status": data.get("status", "unknown"),
+                    "left_speed": data.get(
                         "left_track", {}
                     ).get("speed", 0.0),
                     "right_speed": data.get(
@@ -72,6 +89,7 @@ def _poll_drive_states() -> Dict[str, Any]:
                     ).get("speed", 0.0),
                 }
         except Exception as e:
+            logger.debug(f"Cannot poll track: {e}")
             state["track_error"] = str(e)
 
         # Контроль силы ног
@@ -80,7 +98,7 @@ def _poll_drive_states() -> Dict[str, Any]:
             if resp.status_code == 200:
                 data = resp.json()
                 for loc in [
-                    "left_knee", "right_knee",
+                    "left_knee",  "right_knee",
                     "left_track", "right_track",
                 ]:
                     if loc in data:
@@ -91,15 +109,20 @@ def _poll_drive_states() -> Dict[str, Any]:
                             "current_force": data[loc].get(
                                 "current_force", 0.0
                             ),
-                            "status": data[loc].get("status", "unknown"),
+                            "status": data[loc].get(
+                                "status", "unknown"
+                            ),
                         }
         except Exception as e:
+            logger.debug(f"Cannot poll leg_force: {e}")
             state["force_error"] = str(e)
 
     return state
 
 
-app = FastAPI(title="Critical sensors — legs", version="3.1")
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Critical sensors — legs", version="3.2")
 
 
 @app.get("/health")
@@ -109,6 +132,10 @@ def health():
 
 @app.get("/snapshot")
 def snapshot():
+    """
+    Возвращает снимок состояния всех приводов ног.
+    Используется leg_force_limits_system как канал А.
+    """
     drives = _poll_drive_states()
     return {
         "service":      MODULE_NAME,

@@ -1,3 +1,4 @@
+# critical_sensors_arms/main.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +20,6 @@ MIDDLE_ARM_URL    = os.getenv("MIDDLE_ARM_URL",    "http://localhost:8004")
 FINGERS_URL       = os.getenv("FINGERS_URL",       "http://localhost:8005")
 FORCE_CONTROL_URL = os.getenv("FORCE_CONTROL_URL", "http://localhost:8006")
 
-# Уменьшаем таймаут: 8 запросов × 0.5с = 4с вместо 24с
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "0.5"))
 
 logging.basicConfig(
@@ -31,20 +31,34 @@ logger = logging.getLogger(MODULE_NAME)
 _trusted = True
 
 
+# ── Pydantic модели ───────────────────────────────────────────────────────────
+
 class TrustedUpdate(BaseModel):
     trusted: Optional[bool] = None
 
 
+# ── HTTP-клиент (патчится в тестах) ──────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """
+    Фабрика HTTP-клиента.
+    Патчится в тестах через patch.object(mod, 'get_client', ...).
+    Таймаут 0.5с — при недоступном приводе не зависаем надолго.
+    """
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── Опрос приводов ────────────────────────────────────────────────────────────
+
 def _poll_drive_states() -> Dict[str, Any]:
     """
     Опрашивает реальное состояние приводов рук.
-    Использует ОДИН общий клиент для всех запросов.
-    Таймаут 0.5с — при недоступном приводе не зависаем надолго.
+    Использует get_client() — патчится в тестах.
+    Один клиент на все запросы.
     """
     state = {}
 
-    # Один клиент на все запросы — не создаём SSL контекст 8 раз
-    with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+    with get_client() as c:
 
         # Верхний отдел (плечо)
         for arm in ["left", "right"]:
@@ -57,6 +71,9 @@ def _poll_drive_states() -> Dict[str, Any]:
                         "status":    data.get("status", "unknown"),
                     }
             except Exception as e:
+                logger.debug(
+                    f"Cannot poll upper_arm/{arm}: {e}"
+                )
                 state[f"upper_{arm}_error"] = str(e)
 
         # Средний отдел (локоть)
@@ -70,6 +87,9 @@ def _poll_drive_states() -> Dict[str, Any]:
                         "status":    data.get("status", "unknown"),
                     }
             except Exception as e:
+                logger.debug(
+                    f"Cannot poll middle_arm/{arm}: {e}"
+                )
                 state[f"middle_{arm}_error"] = str(e)
 
         # Пальцы
@@ -83,10 +103,15 @@ def _poll_drive_states() -> Dict[str, Any]:
                             "grip_percentage": data[arm].get(
                                 "grip_percentage", 0.0
                             ),
-                            "grip_force": data[arm].get("grip_force", 0.0),
-                            "status":     data[arm].get("status", "unknown"),
+                            "grip_force": data[arm].get(
+                                "grip_force", 0.0
+                            ),
+                            "status": data[arm].get(
+                                "status", "unknown"
+                            ),
                         }
         except Exception as e:
+            logger.debug(f"Cannot poll fingers: {e}")
             state["fingers_error"] = str(e)
 
         # Контроль силы
@@ -100,15 +125,20 @@ def _poll_drive_states() -> Dict[str, Any]:
                             "current_force": data[arm].get(
                                 "current_force", 0.0
                             ),
-                            "status": data[arm].get("status", "unknown"),
+                            "status": data[arm].get(
+                                "status", "unknown"
+                            ),
                         }
         except Exception as e:
+            logger.debug(f"Cannot poll force_control: {e}")
             state["force_error"] = str(e)
 
     return state
 
 
-app = FastAPI(title="Critical sensors — arms", version="3.1")
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Critical sensors — arms", version="3.2")
 
 
 @app.get("/health")
@@ -118,6 +148,10 @@ def health():
 
 @app.get("/snapshot")
 def snapshot():
+    """
+    Возвращает снимок состояния всех приводов рук.
+    Используется arm_force_limits_system как канал А.
+    """
     drives = _poll_drive_states()
     return {
         "service":      MODULE_NAME,
