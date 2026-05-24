@@ -11,12 +11,13 @@ import uvicorn
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Boolean, DateTime, Text
+    create_engine, Column, Integer, String,
+    Boolean, DateTime, Text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-HOST = '0.0.0.0'
-PORT = int(os.getenv('PORT', 5003))
+HOST        = '0.0.0.0'
+PORT        = int(os.getenv('PORT', 5003))
 MODULE_NAME = os.getenv('MODULE_NAME', 'emergency_stop_module')
 
 logging.basicConfig(
@@ -25,61 +26,65 @@ logging.basicConfig(
 )
 logger = logging.getLogger(MODULE_NAME)
 
-ARM_MOVEMENT_URL = os.getenv('ARM_MOVEMENT_URL', 'http://localhost:8002')
-LEG_MOVEMENT_URL = os.getenv('LEG_MOVEMENT_URL', 'http://localhost:9002')
-UPPER_ARM_URL = os.getenv('UPPER_ARM_URL', 'http://localhost:8003')
-MIDDLE_ARM_URL = os.getenv('MIDDLE_ARM_URL', 'http://localhost:8004')
-FINGERS_URL = os.getenv('FINGERS_URL', 'http://localhost:8005')
+ARM_MOVEMENT_URL  = os.getenv('ARM_MOVEMENT_URL',  'http://localhost:8002')
+LEG_MOVEMENT_URL  = os.getenv('LEG_MOVEMENT_URL',  'http://localhost:9002')
+UPPER_ARM_URL     = os.getenv('UPPER_ARM_URL',     'http://localhost:8003')
+MIDDLE_ARM_URL    = os.getenv('MIDDLE_ARM_URL',    'http://localhost:8004')
+FINGERS_URL       = os.getenv('FINGERS_URL',       'http://localhost:8005')
 FORCE_CONTROL_URL = os.getenv('FORCE_CONTROL_URL', 'http://localhost:8006')
-KNEE_BELT_URL = os.getenv('KNEE_BELT_URL', 'http://localhost:9003')
-TRACK_SYSTEM_URL = os.getenv('TRACK_SYSTEM_URL', 'http://localhost:9004')
-LEG_FORCE_URL = os.getenv('LEG_FORCE_URL', 'http://localhost:9006')
+KNEE_BELT_URL     = os.getenv('KNEE_BELT_URL',     'http://localhost:9003')
+TRACK_SYSTEM_URL  = os.getenv('TRACK_SYSTEM_URL',  'http://localhost:9004')
+LEG_FORCE_URL     = os.getenv('LEG_FORCE_URL',     'http://localhost:9006')
 
 REQUEST_TIMEOUT = 5.0
 
 SAFE_POSE = {
-    'arms': {'intent': 'lower_arm', 'strength': 0.3, 'speed_modifier': 0.5},
-    'legs': {'intent': 'stand_up', 'strength': 0.3, 'speed_modifier': 0.5},
+    'arms': {
+        'intent': 'lower_arm', 'strength': 0.3, 'speed_modifier': 0.5
+    },
+    'legs': {
+        'intent': 'stand_up', 'strength': 0.3, 'speed_modifier': 0.5
+    },
 }
 
 ALL_DRIVE_SUBSYSTEMS = {
-    'arm_movement': ARM_MOVEMENT_URL,
-    'upper_arm': UPPER_ARM_URL,
-    'middle_arm': MIDDLE_ARM_URL,
-    'fingers': FINGERS_URL,
+    'arm_movement':  ARM_MOVEMENT_URL,
+    'upper_arm':     UPPER_ARM_URL,
+    'middle_arm':    MIDDLE_ARM_URL,
+    'fingers':       FINGERS_URL,
     'force_control': FORCE_CONTROL_URL,
-    'leg_movement': LEG_MOVEMENT_URL,
-    'knee_belt': KNEE_BELT_URL,
-    'track_system': TRACK_SYSTEM_URL,
-    'leg_force': LEG_FORCE_URL,
+    'leg_movement':  LEG_MOVEMENT_URL,
+    'knee_belt':     KNEE_BELT_URL,
+    'track_system':  TRACK_SYSTEM_URL,
+    'leg_force':     LEG_FORCE_URL,
 }
 
 DATABASE_URL = 'sqlite:///emergency_stop_module.db'
-engine = create_engine(
+engine       = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
 )
 SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+Base         = declarative_base()
 
 
 class SafePoseEventDB(Base):
     __tablename__ = 'safe_pose_events'
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source = Column(String(100))
-    reason = Column(Text)
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    source             = Column(String(100))
+    reason             = Column(Text)
     subsystems_stopped = Column(Text)
-    subsystems_failed = Column(Text)
-    pose_applied = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    subsystems_failed  = Column(Text)
+    pose_applied       = Column(Boolean, default=False)
+    created_at         = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(engine)
 
 module_state = {
-    'safe_pose_active': False,
+    'safe_pose_active':  False,
     'total_activations': 0,
-    'last_reason': None,
+    'last_reason':       None,
 }
 
 
@@ -88,7 +93,16 @@ class SafePoseRequest(BaseModel):
     reason: str = 'emergency'
 
 
-app = FastAPI(title="Emergency Stop Module", version="1.1")
+# ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def get_client() -> httpx.Client:
+    """Фабрика httpx.Client — патчится в тестах."""
+    return httpx.Client(timeout=REQUEST_TIMEOUT)
+
+
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Emergency Stop Module", version="1.2")
 
 
 @app.get('/health')
@@ -99,10 +113,10 @@ def health():
 @app.get('/status')
 def get_status():
     return {
-        'service': MODULE_NAME,
-        'safe_pose_active': module_state['safe_pose_active'],
+        'service':           MODULE_NAME,
+        'safe_pose_active':  module_state['safe_pose_active'],
         'total_activations': module_state['total_activations'],
-        'last_reason': module_state['last_reason'],
+        'last_reason':       module_state['last_reason'],
     }
 
 
@@ -112,27 +126,31 @@ def apply_safe_pose(body: SafePoseRequest):
         f"SAFE POSE: source={body.source}, reason={body.reason}"
     )
 
-    module_state['safe_pose_active'] = True
+    module_state['safe_pose_active']   = True
     module_state['total_activations'] += 1
-    module_state['last_reason'] = body.reason
+    module_state['last_reason']        = body.reason
 
-    stopped_ok = []
+    stopped_ok   = []
     stopped_fail = []
 
+    # Останавливаем все приводы через get_client()
     for name, url in ALL_DRIVE_SUBSYSTEMS.items():
         try:
-            with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+            with get_client() as c:
                 resp = c.post(f'{url}/emergency_stop')
                 if resp.status_code in [200, 204]:
                     stopped_ok.append(name)
                 else:
-                    stopped_fail.append(f"{name}:HTTP{resp.status_code}")
+                    stopped_fail.append(
+                        f"{name}:HTTP{resp.status_code}"
+                    )
         except Exception as e:
             stopped_fail.append(f"{name}:{e}")
 
+    # Применяем безопасную позу рук
     pose_applied = False
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             c.post(
                 f'{ARM_MOVEMENT_URL}/execute',
                 json={'arm': 'both', **SAFE_POSE['arms']},
@@ -141,8 +159,9 @@ def apply_safe_pose(body: SafePoseRequest):
     except Exception as e:
         logger.error(f"Arm safe pose failed: {e}")
 
+    # Применяем безопасную позу ног
     try:
-        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+        with get_client() as c:
             c.post(
                 f'{LEG_MOVEMENT_URL}/execute',
                 json={'leg': 'both', **SAFE_POSE['legs']},
@@ -153,7 +172,8 @@ def apply_safe_pose(body: SafePoseRequest):
     session = SessionLocal()
     try:
         session.add(SafePoseEventDB(
-            source=body.source, reason=body.reason,
+            source=body.source,
+            reason=body.reason,
             subsystems_stopped=','.join(stopped_ok),
             subsystems_failed=','.join(stopped_fail),
             pose_applied=pose_applied,
@@ -163,11 +183,11 @@ def apply_safe_pose(body: SafePoseRequest):
         session.close()
 
     return {
-        'ok': True,
-        'safe_pose_active': True,
+        'ok':                True,
+        'safe_pose_active':  True,
         'stopped_subsystems': stopped_ok,
-        'failed_subsystems': stopped_fail,
-        'pose_applied': pose_applied,
+        'failed_subsystems':  stopped_fail,
+        'pose_applied':       pose_applied,
     }
 
 
@@ -187,12 +207,15 @@ def get_history(limit: int = Query(100, ge=1, le=1000)):
             .limit(limit).all()
         )
         return [{
-            'id': e.id, 'source': e.source, 'reason': e.reason,
+            'id':                 e.id,
+            'source':             e.source,
+            'reason':             e.reason,
             'subsystems_stopped': e.subsystems_stopped,
-            'subsystems_failed': e.subsystems_failed,
-            'pose_applied': e.pose_applied,
-            'created_at': e.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            if e.created_at else None,
+            'subsystems_failed':  e.subsystems_failed,
+            'pose_applied':       e.pose_applied,
+            'created_at':         e.created_at.strftime(
+                '%Y-%m-%d %H:%M:%S'
+            ) if e.created_at else None,
         } for e in events]
     finally:
         session.close()

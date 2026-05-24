@@ -62,6 +62,9 @@ BATTERY_CTRL_URL = os.getenv('BATTERY_CTRL_URL', 'http://localhost:6004')
 CHARGER_URL      = os.getenv('CHARGER_URL',      'http://localhost:6005')
 BATTERY_CELL_URL = os.getenv('BATTERY_CELL_URL', 'http://localhost:6006')
 
+# ── Crypto ────────────────────────────────────────────────────────────────────
+CRYPTO_URL = os.getenv('CRYPTO_URL', 'http://localhost:4001')
+
 # ── Группы подсистем ──────────────────────────────────────────────────────────
 
 ARM_SUBSYSTEMS = {
@@ -82,21 +85,21 @@ LEG_SUBSYSTEMS = {
 }
 
 AUX_SUBSYSTEMS = {
-    'stop_module':      STOP_MODULE_URL,
-    'carriage_system':  CARRIAGE_URL,
+    'stop_module':        STOP_MODULE_URL,
+    'carriage_system':    CARRIAGE_URL,
     'temperature_system': TEMPERATURE_URL,
-    'heating_system':   HEATING_URL,
-    'cooling_system':   COOLING_URL,
-    'tactile_system':   TACTILE_URL,
+    'heating_system':     HEATING_URL,
+    'cooling_system':     COOLING_URL,
+    'tactile_system':     TACTILE_URL,
 }
 
 MONITORING_SUBSYSTEMS = {
-    'comms_module':      COMMS_URL,
-    'monitoring_system': MONITORING_URL,
-    'sensors_module':    SENSORS_URL,
+    'comms_module':       COMMS_URL,
+    'monitoring_system':  MONITORING_URL,
+    'sensors_module':     SENSORS_URL,
     'battery_controller': BATTERY_CTRL_URL,
-    'charger_module':    CHARGER_URL,
-    'battery_cell':      BATTERY_CELL_URL,
+    'charger_module':     CHARGER_URL,
+    'battery_cell':       BATTERY_CELL_URL,
 }
 
 ALL_SUBSYSTEMS = {
@@ -124,11 +127,11 @@ Base         = declarative_base()
 
 
 class ControlState(str, Enum):
-    STOPPED       = "stopped"
-    CHECKING      = "checking"
-    READY         = "ready"
-    RUNNING       = "running"
-    ERROR         = "error"
+    STOPPED        = "stopped"
+    CHECKING       = "checking"
+    READY          = "ready"
+    RUNNING        = "running"
+    ERROR          = "error"
     EMERGENCY_STOP = "emergency_stop"
 
 
@@ -146,19 +149,19 @@ class SystemEventDB(Base):
 
 class CycleHistoryDB(Base):
     __tablename__ = 'cycle_history'
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    cycle_number   = Column(Integer)
-    body_part      = Column(String(20))
-    target         = Column(String(20))
-    intent         = Column(String(50))
-    strength       = Column(Float)
-    speed_modifier = Column(Float)
-    can_execute    = Column(Boolean)
-    command_sent   = Column(Boolean, default=False)
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    cycle_number    = Column(Integer)
+    body_part       = Column(String(20))
+    target          = Column(String(20))
+    intent          = Column(String(50))
+    strength        = Column(Float)
+    speed_modifier  = Column(Float)
+    can_execute     = Column(Boolean)
+    command_sent    = Column(Boolean, default=False)
     command_success = Column(Boolean, nullable=True)
-    error_message  = Column(Text, nullable=True)
-    analysis_json  = Column(Text, nullable=True)
-    created_at     = Column(DateTime, default=datetime.utcnow)
+    error_message   = Column(Text, nullable=True)
+    analysis_json   = Column(Text, nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow)
 
 
 class MovementAuditDB(Base):
@@ -190,15 +193,15 @@ Base.metadata.create_all(engine)
 # ── Глобальное состояние ──────────────────────────────────────────────────────
 
 system_state: Dict[str, Any] = {
-    'control_state':    ControlState.STOPPED,
-    'arm_cycle_count':  0,
-    'leg_cycle_count':  0,
+    'control_state':     ControlState.STOPPED,
+    'arm_cycle_count':   0,
+    'leg_cycle_count':   0,
     'total_cycle_count': 0,
-    'subsystem_status': {},
+    'subsystem_status':  {},
     'last_arm_analysis': None,
     'last_leg_analysis': None,
-    'session_active':   False,
-    'gateway_state':    'off',
+    'session_active':    False,
+    'gateway_state':     'off',
 }
 
 # ── Pydantic модели ───────────────────────────────────────────────────────────
@@ -235,8 +238,8 @@ class AlarmSendRequest(BaseModel):
 
 class DoctorCommandRequest(BaseModel):
     type:   str
-    source: str             = 'operator'
-    data:   Dict[str, Any]  = {}
+    source: str            = 'operator'
+    data:   Dict[str, Any] = {}
 
 class EmergencyStopRequest(BaseModel):
     source: str = 'operator'
@@ -267,46 +270,36 @@ def _on_command_message(payload: Dict[str, Any]):
             for part, neural, movement, subs, key in (
                 ('arms', NEURAL_SIGNAL_URL, ARM_MOVEMENT_URL,
                  ARM_SUBSYSTEMS, 'target_arm'),
-                ('legs', LEG_NEURAL_URL,    LEG_MOVEMENT_URL,
+                ('legs', LEG_NEURAL_URL, LEG_MOVEMENT_URL,
                  LEG_SUBSYSTEMS, 'target_leg'),
             ):
                 try:
-                    run_cycle(
-                        part, neural, movement,
-                        data.get(f'{part[:-1]}_signals'),
-                        subs, key,
-                    )
+                    run_cycle(part, neural, movement,
+                              data.get(f'{part[:-1]}_signals'), subs, key)
                 except Exception as e:
                     logger.error("%s cycle failed: %s", part, e)
         else:
-            log_event(
-                'kafka_command_unknown',
-                f'Unknown command: {command}',
-                success=False,
-            )
+            log_event('kafka_command_unknown',
+                      f'Unknown command: {command}', success=False)
     except Exception as e:
         logger.exception("Kafka command handling failed: %s", e)
 
 
-# ── Lifespan (заменяет on_event) ──────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup ───────────────────────────────────────────────────────────────
     bus.subscribe(
         TOPIC_COMMANDS,
         handler=_on_command_message,
         group_id='control-commands',
     )
     logger.info(
-        "[system_startup] control_system v4.1 starting on port %d", PORT
+        "[system_startup] control_system v4.2 starting on port %d", PORT
     )
-    log_event(
-        'system_startup',
-        f'{MODULE_NAME} v4.1 starting on port {PORT}',
-    )
+    log_event('system_startup',
+              f'{MODULE_NAME} v4.2 starting on port {PORT}')
     yield
-    # ── Shutdown ──────────────────────────────────────────────────────────────
     bus.close()
 
 
@@ -314,12 +307,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Exoskeleton Control System",
-    description=(
-        "Центральный модуль управления полным экзоскелетом: "
-        "руки, ноги, остановка, коляска, климат, "
-        "тактильная связь, мониторинг, батарея, связь с врачами."
-    ),
-    version="4.1",
+    version="4.2",
     lifespan=lifespan,
 )
 
@@ -368,25 +356,184 @@ def save_gateway_command(
         session.close()
 
 
+# ── Шифрование через crypto_module ────────────────────────────────────────────
+
+def encrypt_payload(
+    data: dict,
+    target: str = 'comms_module',
+) -> Optional[Dict[str, str]]:
+    """
+    Шифрует данные через crypto_module перед отправкой в comms_module.
+    Возвращает {'ciphertext': ..., 'signature': ..., 'timestamp': ...}
+    или None при ошибке.
+    """
+    try:
+        plaintext = json.dumps(data, default=str)
+        with get_client() as c:
+            resp = c.post(f'{CRYPTO_URL}/encrypt', json={
+                'plaintext': plaintext,
+                'source':    MODULE_NAME,
+                'target':    target,
+            })
+            if resp.status_code == 200:
+                result = resp.json()
+                logger.debug(
+                    "Payload encrypted for %s: sig=%s",
+                    target, result.get('signature', '')[:8]
+                )
+                return result
+            else:
+                logger.error(
+                    "Crypto module returned HTTP %d", resp.status_code
+                )
+                return None
+    except Exception as e:
+        logger.error("Encryption failed: %s", e)
+        return None
+
+
+def send_encrypted_alarm(alarms: list) -> dict:
+    """
+    Шифрует данные аларма и отправляет в comms_module уже зашифрованными.
+    Цепочка: control_system → crypto_module → comms_module.
+    """
+    payload = {
+        'alarms':    alarms,
+        'source':    MODULE_NAME,
+        'timestamp': datetime.utcnow().isoformat(),
+    }
+
+    encrypted = encrypt_payload(payload, target='comms_module')
+
+    if encrypted is None:
+        # Fallback: отправляем без шифрования с пометкой
+        logger.warning(
+            "Crypto unavailable, sending alarm without encryption"
+        )
+        try:
+            with get_client() as c:
+                resp = c.post(
+                    f'{COMMS_URL}/alarm',
+                    json={'alarms': alarms}
+                )
+                return resp.json()
+        except Exception as e:
+            return {'error': str(e), 'encrypted': False}
+
+    # Отправляем зашифрованный пакет в comms_module
+    try:
+        with get_client() as c:
+            resp = c.post(
+                f'{COMMS_URL}/alarm_encrypted',
+                json={
+                    'ciphertext': encrypted['ciphertext'],
+                    'signature':  encrypted['signature'],
+                    'source':     MODULE_NAME,
+                    'target':     'comms_module',
+                    'alarms_count': len(alarms),
+                }
+            )
+            result = resp.json()
+            result['encrypted'] = True
+            return result
+    except Exception as e:
+        logger.error("Encrypted alarm send failed: %s", e)
+        return {'error': str(e), 'encrypted': True}
+
+
+def send_encrypted_telemetry(telemetry: dict) -> dict:
+    """
+    Шифрует телеметрию (физиологические данные) и отправляет в comms_module.
+    Цепочка: control_system → crypto_module → comms_module.
+    """
+    encrypted = encrypt_payload(telemetry, target='comms_module')
+
+    if encrypted is None:
+        logger.warning(
+            "Crypto unavailable, telemetry not sent to comms"
+        )
+        return {'error': 'crypto_unavailable', 'encrypted': False}
+
+    try:
+        with get_client() as c:
+            resp = c.post(
+                f'{COMMS_URL}/telemetry_encrypted',
+                json={
+                    'ciphertext': encrypted['ciphertext'],
+                    'signature':  encrypted['signature'],
+                    'source':     MODULE_NAME,
+                    'target':     'comms_module',
+                    'timestamp':  encrypted.get('timestamp'),
+                }
+            )
+            result = resp.json()
+            result['encrypted'] = True
+            return result
+    except Exception as e:
+        logger.error("Encrypted telemetry send failed: %s", e)
+        return {'error': str(e), 'encrypted': True}
+
+
+def send_encrypted_doctor_command(cmd_type: str, data: dict) -> dict:
+    """
+    Шифрует команду врача и отправляет в comms_module.
+    """
+    payload = {
+        'type':      cmd_type,
+        'data':      data,
+        'source':    MODULE_NAME,
+        'timestamp': datetime.utcnow().isoformat(),
+    }
+
+    encrypted = encrypt_payload(payload, target='comms_module')
+
+    if encrypted is None:
+        logger.warning("Crypto unavailable for doctor command")
+        try:
+            with get_client() as c:
+                resp = c.post(
+                    f'{COMMS_URL}/command',
+                    json={'type': cmd_type, 'source': MODULE_NAME,
+                          'data': data}
+                )
+                return resp.json()
+        except Exception as e:
+            return {'error': str(e), 'encrypted': False}
+
+    try:
+        with get_client() as c:
+            resp = c.post(
+                f'{COMMS_URL}/command_encrypted',
+                json={
+                    'ciphertext': encrypted['ciphertext'],
+                    'signature':  encrypted['signature'],
+                    'source':     MODULE_NAME,
+                    'target':     'comms_module',
+                }
+            )
+            result = resp.json()
+            result['encrypted'] = True
+            return result
+    except Exception as e:
+        logger.error("Encrypted command send failed: %s", e)
+        return {'error': str(e), 'encrypted': True}
+
+
+# ── Остальные вспомогательные функции ────────────────────────────────────────
+
 def check_subsystem_health(name: str, url: str) -> Dict[str, Any]:
     try:
         with get_client() as c:
             resp = c.get(f'{url}/health')
             if resp.status_code == 200:
-                return {
-                    'name': name, 'url': url,
-                    'status': 'healthy', 'response': resp.json(),
-                }
-            return {
-                'name': name, 'url': url,
-                'status': 'unhealthy',
-                'error':  f'HTTP {resp.status_code}',
-            }
+                return {'name': name, 'url': url,
+                        'status': 'healthy', 'response': resp.json()}
+            return {'name': name, 'url': url,
+                    'status': 'unhealthy',
+                    'error': f'HTTP {resp.status_code}'}
     except Exception as e:
-        return {
-            'name': name, 'url': url,
-            'status': 'unreachable', 'error': str(e),
-        }
+        return {'name': name, 'url': url,
+                'status': 'unreachable', 'error': str(e)}
 
 
 def check_subsystems(subsystems: Dict[str, str]) -> Dict[str, Any]:
@@ -397,12 +544,10 @@ def check_subsystems(subsystems: Dict[str, str]) -> Dict[str, Any]:
         results[name] = result
         if result['status'] != 'healthy':
             all_healthy = False
-            log_event(
-                'health_check_fail',
-                f"{name} is {result['status']}",
-                subsystem=name, success=False,
-                details=result.get('error'),
-            )
+            log_event('health_check_fail',
+                      f"{name} is {result['status']}",
+                      subsystem=name, success=False,
+                      details=result.get('error'))
     return {'all_healthy': all_healthy, 'subsystems': results}
 
 
@@ -430,7 +575,7 @@ def aggregate_aux_telemetry() -> Dict[str, Any]:
     with get_client() as c:
         for key, url in services.items():
             try:
-                resp      = c.get(f'{url}/status')
+                resp       = c.get(f'{url}/status')
                 parts[key] = (
                     resp.json() if resp.status_code == 200
                     else {'error': f'HTTP {resp.status_code}'}
@@ -453,8 +598,8 @@ def aggregate_monitoring_telemetry() -> Dict[str, Any]:
     with get_client() as c:
         for key, url in services.items():
             try:
-                endpoint  = '/readings' if key == 'sensors' else '/status'
-                resp      = c.get(f'{url}{endpoint}')
+                endpoint   = '/readings' if key == 'sensors' else '/status'
+                resp       = c.get(f'{url}{endpoint}')
                 parts[key] = (
                     resp.json() if resp.status_code == 200
                     else {'error': f'HTTP {resp.status_code}'}
@@ -466,44 +611,38 @@ def aggregate_monitoring_telemetry() -> Dict[str, Any]:
 
 def apply_climate(body_temp_c: float, air_temp_c: float) -> str:
     with get_client() as c:
-        c.post(
-            f'{TEMPERATURE_URL}/sensors',
-            json={'body_temp_c': body_temp_c, 'air_temp_c': air_temp_c},
-        )
+        c.post(f'{TEMPERATURE_URL}/sensors',
+               json={'body_temp_c': body_temp_c, 'air_temp_c': air_temp_c})
         resp = c.post(f'{TEMPERATURE_URL}/decide')
         resp.raise_for_status()
         mode = resp.json()['climate_mode']
-
         if mode == 'heating':
             c.post(f'{COOLING_URL}/off')
             c.post(f'{HEATING_URL}/level', json={'level': 0.55})
-            logger.info("Climate: heating activated")
         elif mode == 'cooling':
             c.post(f'{HEATING_URL}/off')
             c.post(f'{COOLING_URL}/speed', json={'speed': 0.65})
-            logger.info("Climate: cooling activated")
         else:
             c.post(f'{HEATING_URL}/off')
             c.post(f'{COOLING_URL}/off')
-            logger.info("Climate: idle")
     return mode
 
 
 def run_cycle(
-    body_part:   str,
-    neural_url:  str,
+    body_part:    str,
+    neural_url:   str,
     movement_url: str,
-    signals:     Optional[Dict[str, float]],
-    subsystems:  Dict[str, str],
-    target_key:  str,
+    signals:      Optional[Dict[str, float]],
+    subsystems:   Dict[str, str],
+    target_key:   str,
 ) -> Dict[str, Any]:
 
-    check        = check_subsystems(subsystems)
-    neural_name  = list(subsystems.keys())[0]
+    check         = check_subsystems(subsystems)
+    neural_name   = list(subsystems.keys())[0]
     movement_name = list(subsystems.keys())[1]
 
     neural_ok   = (
-        check['subsystems'].get(neural_name,   {}).get('status') == 'healthy'
+        check['subsystems'].get(neural_name, {}).get('status') == 'healthy'
     )
     movement_ok = (
         check['subsystems'].get(movement_name, {}).get('status') == 'healthy'
@@ -524,9 +663,9 @@ def run_cycle(
     system_state['total_cycle_count'] += 1
     system_state['control_state'] = ControlState.RUNNING
 
-    log_event('cycle_start', f'{body_part} cycle {cycle_num}', body_part=body_part)
+    log_event('cycle_start', f'{body_part} cycle {cycle_num}',
+              body_part=body_part)
 
-    # Анализ нейросигналов
     try:
         payload = {'signals': signals} if signals else {}
         with get_client() as c:
@@ -538,10 +677,8 @@ def run_cycle(
         system_state['control_state'] = ControlState.ERROR
         error_msg = f'Neural analysis failed: {e}'
         log_event('analysis_failed', error_msg, success=False)
-        _save_cycle(
-            cycle_num, body_part, 'none', 'idle',
-            0, 0, False, False, None, error_msg, None,
-        )
+        _save_cycle(cycle_num, body_part, 'none', 'idle',
+                    0, 0, False, False, None, error_msg, None)
         raise HTTPException(status_code=500, detail=error_msg)
 
     if body_part == 'arms':
@@ -549,16 +686,11 @@ def run_cycle(
     else:
         system_state['last_leg_analysis'] = analysis
 
-    target    = analysis.get(target_key, 'none')
-    intent    = analysis.get('intent',         'idle')
-    strength  = analysis.get('strength',       0)
-    speed_mod = analysis.get('speed_modifier', 0)
-    can_execute = analysis.get('can_execute',  False)
-
-    logger.info(
-        "%s: target=%s intent=%s can_execute=%s",
-        body_part, target, intent, can_execute,
-    )
+    target      = analysis.get(target_key, 'none')
+    intent      = analysis.get('intent',         'idle')
+    strength    = analysis.get('strength',       0)
+    speed_mod   = analysis.get('speed_modifier', 0)
+    can_execute = analysis.get('can_execute',    False)
 
     command_sent    = False
     command_success = None
@@ -579,41 +711,32 @@ def run_cycle(
                 command_sent    = True
                 command_success = resp.status_code in [200, 204]
                 if command_success:
-                    log_event(
-                        'command_sent',
-                        f"{body_part}: {target} - {intent}",
-                        body_part=body_part,
-                    )
+                    log_event('command_sent',
+                              f"{body_part}: {target} - {intent}",
+                              body_part=body_part)
                 else:
                     command_error = f'HTTP {resp.status_code}'
         except Exception as e:
             command_sent    = True
             command_success = False
             command_error   = str(e)
-            log_event(
-                'command_failed', str(e),
-                body_part=body_part, success=False,
-            )
+            log_event('command_failed', str(e),
+                      body_part=body_part, success=False)
     elif not can_execute:
         log_event('no_action', f'{body_part}: idle', body_part=body_part)
     else:
         command_error = f'{movement_name} unavailable'
-        log_event(
-            'command_skipped', command_error,
-            body_part=body_part, success=False,
-        )
+        log_event('command_skipped', command_error,
+                  body_part=body_part, success=False)
 
-    _save_cycle(
-        cycle_num, body_part, target, intent,
-        strength, speed_mod, can_execute,
-        command_sent, command_success, command_error,
-        json.dumps(analysis, default=str),
-    )
+    _save_cycle(cycle_num, body_part, target, intent,
+                strength, speed_mod, can_execute,
+                command_sent, command_success, command_error,
+                json.dumps(analysis, default=str))
+
     if command_sent:
-        _save_audit(
-            body_part, target, intent, strength, speed_mod,
-            'success' if command_success else 'failed',
-        )
+        _save_audit(body_part, target, intent, strength, speed_mod,
+                    'success' if command_success else 'failed')
 
     system_state['control_state'] = ControlState.READY
 
@@ -692,10 +815,6 @@ def get_state():
         'total_cycles':      system_state['total_cycle_count'],
         'last_arm_analysis': system_state['last_arm_analysis'],
         'last_leg_analysis': system_state['last_leg_analysis'],
-        'subsystems': {
-            n: i.get('status', 'unknown')
-            for n, i in system_state['subsystem_status'].items()
-        },
     }
 
 
@@ -703,111 +822,78 @@ def get_state():
 
 @app.get('/check_systems')
 def check_all_systems():
-    logger.info("Checking all 23 subsystems...")
     system_state['control_state'] = ControlState.CHECKING
     result = check_subsystems(ALL_SUBSYSTEMS)
     system_state['subsystem_status'] = result['subsystems']
-
     if result['all_healthy']:
         system_state['control_state'] = ControlState.READY
-        log_event('systems_check', 'All 23 systems healthy — READY')
+        log_event('systems_check', 'All systems healthy')
     else:
         system_state['control_state'] = ControlState.ERROR
-        unhealthy = [
-            n for n, i in result['subsystems'].items()
-            if i['status'] != 'healthy'
-        ]
-        log_event(
-            'systems_check', f'Unhealthy: {unhealthy}',
-            success=False, details=str(unhealthy),
-        )
-
+        unhealthy = [n for n, i in result['subsystems'].items()
+                     if i['status'] != 'healthy']
+        log_event('systems_check', f'Unhealthy: {unhealthy}',
+                  success=False)
     result['control_state'] = system_state['control_state'].value
     return result
 
 
 @app.get('/check_arms')
 def check_arm_systems():
-    result         = check_subsystems(ARM_SUBSYSTEMS)
+    result = check_subsystems(ARM_SUBSYSTEMS)
     result['group'] = 'arms'
     return result
 
 
 @app.get('/check_legs')
 def check_leg_systems():
-    result         = check_subsystems(LEG_SUBSYSTEMS)
+    result = check_subsystems(LEG_SUBSYSTEMS)
     result['group'] = 'legs'
     return result
 
 
 @app.get('/check_aux')
 def check_aux_systems():
-    result         = check_subsystems(AUX_SUBSYSTEMS)
+    result = check_subsystems(AUX_SUBSYSTEMS)
     result['group'] = 'auxiliary'
     return result
 
 
 @app.get('/check_monitoring')
 def check_monitoring_systems():
-    result         = check_subsystems(MONITORING_SUBSYSTEMS)
+    result = check_subsystems(MONITORING_SUBSYSTEMS)
     result['group'] = 'monitoring'
     return result
 
 
-# ── Эндпоинты: Управление руками ─────────────────────────────────────────────
+# ── Эндпоинты: Управление руками/ногами ──────────────────────────────────────
 
 @app.post('/start/arms')
 def start_arm_cycle(body: ArmStartRequest = ArmStartRequest()):
-    logger.info("Starting ARM control cycle")
-    return run_cycle(
-        body_part='arms',
-        neural_url=NEURAL_SIGNAL_URL,
-        movement_url=ARM_MOVEMENT_URL,
-        signals=body.signals,
-        subsystems=ARM_SUBSYSTEMS,
-        target_key='target_arm',
-    )
+    return run_cycle('arms', NEURAL_SIGNAL_URL, ARM_MOVEMENT_URL,
+                     body.signals, ARM_SUBSYSTEMS, 'target_arm')
 
-
-# ── Эндпоинты: Управление ногами ─────────────────────────────────────────────
 
 @app.post('/start/legs')
 def start_leg_cycle(body: LegStartRequest = LegStartRequest()):
-    logger.info("Starting LEG control cycle")
-    return run_cycle(
-        body_part='legs',
-        neural_url=LEG_NEURAL_URL,
-        movement_url=LEG_MOVEMENT_URL,
-        signals=body.signals,
-        subsystems=LEG_SUBSYSTEMS,
-        target_key='target_leg',
-    )
+    return run_cycle('legs', LEG_NEURAL_URL, LEG_MOVEMENT_URL,
+                     body.signals, LEG_SUBSYSTEMS, 'target_leg')
 
-
-# ── Эндпоинты: Полный цикл ────────────────────────────────────────────────────
 
 @app.post('/start/full')
 def start_full_cycle(body: FullStartRequest = FullStartRequest()):
-    logger.info("Starting FULL BODY control cycle")
     arm_result = arm_error = leg_result = leg_error = None
-
     try:
-        arm_result = run_cycle(
-            'arms', NEURAL_SIGNAL_URL, ARM_MOVEMENT_URL,
-            body.arm_signals, ARM_SUBSYSTEMS, 'target_arm',
-        )
+        arm_result = run_cycle('arms', NEURAL_SIGNAL_URL, ARM_MOVEMENT_URL,
+                               body.arm_signals, ARM_SUBSYSTEMS, 'target_arm')
     except HTTPException as e:
         arm_error = e.detail
-        logger.error("Arm cycle failed: %s", arm_error)
 
     try:
-        leg_result = run_cycle(
-            'legs', LEG_NEURAL_URL, LEG_MOVEMENT_URL,
-            body.leg_signals, LEG_SUBSYSTEMS, 'target_leg',
-        )
+        leg_result = run_cycle('legs', LEG_NEURAL_URL, LEG_MOVEMENT_URL,
+                               body.leg_signals, LEG_SUBSYSTEMS, 'target_leg')
     except HTTPException as e:
         leg_error = e.detail
-        logger.error("Leg cycle failed: %s", leg_error)
 
     return {
         'arms':          arm_result or {'error': arm_error},
@@ -822,29 +908,23 @@ def start_full_cycle(body: FullStartRequest = FullStartRequest()):
 def full_emergency_stop(
     body: EmergencyStopRequest = EmergencyStopRequest(),
 ):
-    system_state['control_state'] = ControlState.EMERGENCY_STOP
+    system_state['control_state']  = ControlState.EMERGENCY_STOP
     system_state['session_active'] = False
     system_state['gateway_state']  = 'emergency'
     logger.critical("!!! EMERGENCY STOP from %s !!!", body.source)
-    log_event(
-        'emergency_stop',
-        f'Emergency stop from {body.source}',
-        body_part='all',
-    )
+    log_event('emergency_stop', f'Emergency stop from {body.source}',
+              body_part='all')
 
     results = {}
-
-    reason = (
-        'patient_emergency'   if body.source == 'patient'
+    reason  = (
+        'patient_emergency'    if body.source == 'patient'
         else 'monitoring_obstacle' if body.source == 'monitoring'
         else 'doctor_emergency'
     )
     try:
         with get_client() as c:
-            resp = c.post(
-                f'{STOP_MODULE_URL}/emergency-stop',
-                json={'reason': reason},
-            )
+            resp = c.post(f'{STOP_MODULE_URL}/emergency-stop',
+                          json={'reason': reason})
             results['stop_module'] = {'success': resp.status_code == 200}
     except Exception as e:
         results['stop_module'] = {'success': False, 'error': str(e)}
@@ -852,27 +932,23 @@ def full_emergency_stop(
     for name, url in {**ARM_SUBSYSTEMS, **LEG_SUBSYSTEMS}.items():
         try:
             with get_client() as c:
-                resp         = c.post(f'{url}/emergency_stop')
+                resp          = c.post(f'{url}/emergency_stop')
                 results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
 
-    return {
-        'message': 'Emergency stop activated',
-        'source':  body.source,
-        'results': results,
-    }
+    return {'message': 'Emergency stop activated',
+            'source': body.source, 'results': results}
 
 
 @app.post('/stop/emergency/arms')
 def emergency_stop_arms():
-    logger.critical("EMERGENCY STOP — ARMS")
     log_event('emergency_stop_arms', 'Arms emergency stop')
     results = {}
     for name, url in ARM_SUBSYSTEMS.items():
         try:
             with get_client() as c:
-                resp         = c.post(f'{url}/emergency_stop')
+                resp          = c.post(f'{url}/emergency_stop')
                 results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
@@ -881,13 +957,12 @@ def emergency_stop_arms():
 
 @app.post('/stop/emergency/legs')
 def emergency_stop_legs():
-    logger.critical("EMERGENCY STOP — LEGS")
     log_event('emergency_stop_legs', 'Legs emergency stop')
     results = {}
     for name, url in LEG_SUBSYSTEMS.items():
         try:
             with get_client() as c:
-                resp         = c.post(f'{url}/emergency_stop')
+                resp          = c.post(f'{url}/emergency_stop')
                 results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
@@ -896,7 +971,6 @@ def emergency_stop_legs():
 
 @app.post('/stop/smooth')
 def smooth_stop():
-    logger.info("Smooth stop")
     log_event('smooth_stop', 'Smooth stop executed')
     try:
         with get_client() as c:
@@ -910,16 +984,13 @@ def smooth_stop():
 def reset_emergency(source: str = 'operator'):
     authorized = {'doctor_tablet', 'rehab_center', 'operator'}
     if source not in authorized:
-        raise HTTPException(
-            status_code=403, detail=f'Source {source} not authorized'
-        )
+        raise HTTPException(status_code=403,
+                            detail=f'Source {source} not authorized')
     try:
         with get_client() as c:
-            resp = c.post(
-                f'{STOP_MODULE_URL}/reset-emergency',
-                json={'authorized': True},
-            )
-            ok = resp.json().get('ok', False)
+            resp = c.post(f'{STOP_MODULE_URL}/reset-emergency',
+                          json={'authorized': True})
+            ok   = resp.json().get('ok', False)
             if ok:
                 system_state['gateway_state']  = 'stopped'
                 system_state['control_state']  = ControlState.STOPPED
@@ -947,12 +1018,12 @@ def open_carriage(body: CarriageRequest):
         snap           = get_stop_snapshot()
         drives_stopped = not snap.get('drives_enabled', False)
         with get_client() as c:
-            resp   = c.post(
-                f'{CARRIAGE_URL}/open',
-                json={'drives_stopped': drives_stopped, 'emergency': body.emergency},
-            )
+            resp   = c.post(f'{CARRIAGE_URL}/open',
+                            json={'drives_stopped': drives_stopped,
+                                  'emergency': body.emergency})
             result = resp.json()
-            log_event('carriage_open', f"Source: {body.source}, ok={result.get('ok')}")
+            log_event('carriage_open',
+                      f"Source: {body.source}, ok={result.get('ok')}")
             return result
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -985,23 +1056,14 @@ def carriage_status():
 
 @app.post('/climate/update')
 def update_climate(body: ClimateRequest):
-    logger.info(
-        "Climate update: body=%.1f°C air=%.1f°C",
-        body.body_temp_c, body.air_temp_c,
-    )
     try:
         mode = apply_climate(body.body_temp_c, body.air_temp_c)
-        log_event(
-            'climate_update',
-            f"Mode: {mode}, body={body.body_temp_c}, air={body.air_temp_c}",
-        )
-        return {
-            'ok': True, 'climate_mode': mode,
-            'temperatures': {
-                'body_temp_c': body.body_temp_c,
-                'air_temp_c':  body.air_temp_c,
-            },
-        }
+        log_event('climate_update',
+                  f"Mode: {mode}, body={body.body_temp_c}, "
+                  f"air={body.air_temp_c}")
+        return {'ok': True, 'climate_mode': mode,
+                'temperatures': {'body_temp_c': body.body_temp_c,
+                                 'air_temp_c': body.air_temp_c}}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -1009,11 +1071,9 @@ def update_climate(body: ClimateRequest):
 @app.get('/climate/status')
 def climate_status():
     result = {}
-    for name, url in {
-        'temperature': TEMPERATURE_URL,
-        'heating':     HEATING_URL,
-        'cooling':     COOLING_URL,
-    }.items():
+    for name, url in {'temperature': TEMPERATURE_URL,
+                      'heating': HEATING_URL,
+                      'cooling': COOLING_URL}.items():
         try:
             with get_client() as c:
                 result[name] = c.get(f'{url}/status').json()
@@ -1022,38 +1082,22 @@ def climate_status():
     return result
 
 
-@app.post('/climate/heating/off')
-def turn_off_heating():
-    with get_client() as c:
-        return c.post(f'{HEATING_URL}/off').json()
-
-
-@app.post('/climate/cooling/off')
-def turn_off_cooling():
-    with get_client() as c:
-        return c.post(f'{COOLING_URL}/off').json()
-
-
 # ── Эндпоинты: Тактильная обратная связь ─────────────────────────────────────
 
 @app.post('/tactile/emit')
 def tactile_emit(body: TactileRequest):
     try:
-        snap          = get_stop_snapshot()
+        snap           = get_stop_snapshot()
         source_trusted = (
             body.monitoring_ok
             and system_state['session_active']
             and not snap.get('stopped', False)
         )
         with get_client() as c:
-            return c.post(
-                f'{TACTILE_URL}/emit',
-                json={
-                    'pattern':       body.pattern,
-                    'intensity':     body.intensity,
-                    'source_trusted': source_trusted,
-                },
-            ).json()
+            return c.post(f'{TACTILE_URL}/emit',
+                          json={'pattern':       body.pattern,
+                                'intensity':     body.intensity,
+                                'source_trusted': source_trusted}).json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -1062,29 +1106,11 @@ def tactile_emit(body: TactileRequest):
 def send_tactile_warning():
     try:
         with get_client() as c:
-            resp = c.post(
-                f'{TACTILE_URL}/emit',
-                json={'pattern': 'warning', 'intensity': 0.7,
-                      'source_trusted': True},
-            )
+            resp = c.post(f'{TACTILE_URL}/emit',
+                          json={'pattern': 'warning', 'intensity': 0.7,
+                                'source_trusted': True})
             log_event('tactile_warning', 'Warning signal sent')
             return resp.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.post('/tactile/contact')
-def send_tactile_contact(intensity: float = 0.5):
-    try:
-        with get_client() as c:
-            return c.post(
-                f'{TACTILE_URL}/emit',
-                json={
-                    'pattern':       'contact_sole',
-                    'intensity':     intensity,
-                    'source_trusted': system_state['session_active'],
-                },
-            ).json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -1131,38 +1157,16 @@ def get_battery_status():
 def control_battery_charge(body: BatteryChargeRequest):
     try:
         with get_client() as c:
-            resp = c.post(
-                f'{BATTERY_CTRL_URL}/control/charge',
-                json={'enable': body.enable},
-            )
-            log_event(
-                'battery_charge',
-                f"Charge {'enabled' if body.enable else 'disabled'}",
-            )
+            resp = c.post(f'{BATTERY_CTRL_URL}/control/charge',
+                          json={'enable': body.enable})
+            log_event('battery_charge',
+                      f"Charge {'enabled' if body.enable else 'disabled'}")
             return resp.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-@app.get('/monitoring/alarm_history')
-def get_alarm_history():
-    try:
-        with get_client() as c:
-            return c.get(f'{MONITORING_URL}/alarm_history').json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-@app.get('/monitoring/telemetry_history')
-def get_telemetry_history():
-    try:
-        with get_client() as c:
-            return c.get(f'{MONITORING_URL}/telemetry_history').json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-
-# ── Эндпоинты: Связь ─────────────────────────────────────────────────────────
+# ── Эндпоинты: Связь с врачами (зашифрованная) ───────────────────────────────
 
 @app.get('/comms/status')
 def get_comms_status():
@@ -1175,29 +1179,39 @@ def get_comms_status():
 
 @app.post('/comms/alarm')
 def send_alarm(body: AlarmSendRequest):
-    try:
-        with get_client() as c:
-            resp = c.post(
-                f'{COMMS_URL}/alarm', json={'alarms': body.alarms}
-            )
-            log_event('alarm_sent', f"Alarms: {body.alarms}")
-            return resp.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    """
+    Отправляет аларм в comms_module в зашифрованном виде.
+    Цепочка: control_system → crypto_module → comms_module.
+    """
+    result = send_encrypted_alarm(body.alarms)
+    log_event('alarm_sent',
+              f"Alarms (encrypted): {body.alarms}",
+              details=json.dumps(result))
+    return result
 
 
 @app.post('/comms/command')
 def send_doctor_command(body: DoctorCommandRequest):
-    try:
-        with get_client() as c:
-            resp = c.post(
-                f'{COMMS_URL}/command',
-                json={'type': body.type, 'source': body.source, 'data': body.data},
-            )
-            log_event('doctor_command', f"Command: {body.type} from {body.source}")
-            return resp.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    """
+    Отправляет команду врача через зашифрованный канал.
+    Цепочка: control_system → crypto_module → comms_module.
+    """
+    result = send_encrypted_doctor_command(body.type, body.data)
+    log_event('doctor_command',
+              f"Command (encrypted): {body.type} from {body.source}")
+    return result
+
+
+@app.post('/comms/telemetry')
+def send_telemetry_to_comms(telemetry: Dict[str, Any] = Body(...)):
+    """
+    Отправляет физиологическую телеметрию в зашифрованном виде.
+    Цепочка: control_system → crypto_module → comms_module.
+    """
+    result = send_encrypted_telemetry(telemetry)
+    log_event('telemetry_sent_encrypted',
+              'Telemetry encrypted and sent to comms')
+    return result
 
 
 @app.get('/comms/history')
@@ -1218,24 +1232,24 @@ def gateway_commands(body: Dict[str, Any] = Body(...)) -> JSONResponse:
 
     if not action:
         return JSONResponse(
-            {'ok': False, 'error': 'missing_action', 'correlation_id': cid}, 422
+            {'ok': False, 'error': 'missing_action',
+             'correlation_id': cid}, 422
         )
 
-    logger.info(
-        "Gateway: action=%s source=%s cid=%s",
-        action, body.get('source'), cid,
-    )
+    logger.info("Gateway: action=%s source=%s cid=%s",
+                action, body.get('source'), cid)
 
     try:
-        result                 = _gateway_dispatch(action, body)
-        ok                     = result.get('ok', True)
+        result                   = _gateway_dispatch(action, body)
+        ok                       = result.get('ok', True)
         result['correlation_id'] = cid
         save_gateway_command(
             action, str(body.get('source', '')), str(cid), ok, result
         )
         return JSONResponse(result, status_code=200 if ok else 422)
     except httpx.HTTPError as e:
-        err = {'ok': False, 'correlation_id': cid, 'error': f'upstream:{e!s}'}
+        err = {'ok': False, 'correlation_id': cid,
+               'error': f'upstream:{e!s}'}
         save_gateway_command(
             action, str(body.get('source', '')), str(cid), False, err
         )
@@ -1253,30 +1267,21 @@ def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
         system_state['session_active'] = False
         system_state['gateway_state']  = 'ready'
         log_event('gateway_initialize', 'System initialized')
-        return {
-            'ok': True,
-            'result': {'initialized': True},
-            'telemetry': aggregate_aux_telemetry(),
-        }
+        return {'ok': True, 'result': {'initialized': True},
+                'telemetry': aggregate_aux_telemetry()}
 
     if action == 'start_session':
         if src not in TRUSTED_SOURCES:
             with get_client() as c:
-                c.post(
-                    f'{STOP_MODULE_URL}/emergency-stop',
-                    json={'reason': 'unauthorized_command'},
-                )
+                c.post(f'{STOP_MODULE_URL}/emergency-stop',
+                       json={'reason': 'unauthorized_command'})
             system_state['gateway_state'] = 'emergency'
-            return {
-                'ok': False, 'error': 'untrusted_source',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'untrusted_source',
+                    'telemetry': aggregate_aux_telemetry()}
         snap = get_stop_snapshot()
         if snap.get('stopped'):
-            return {
-                'ok': False, 'error': 'system_stopped',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'system_stopped',
+                    'telemetry': aggregate_aux_telemetry()}
         with get_client() as c:
             c.post(f'{STOP_MODULE_URL}/allow-movement')
         system_state['session_active'] = True
@@ -1286,10 +1291,8 @@ def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     if action == 'end_session':
         if src not in TRUSTED_SOURCES:
-            return {
-                'ok': False, 'error': 'untrusted_source',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'untrusted_source',
+                    'telemetry': aggregate_aux_telemetry()}
         with get_client() as c:
             c.post(f'{STOP_MODULE_URL}/smooth-stop')
         system_state['session_active'] = False
@@ -1299,36 +1302,28 @@ def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     if action == 'emergency_stop':
         reason = (
-            'patient_emergency'   if src == 'patient'
+            'patient_emergency'    if src == 'patient'
             else 'monitoring_obstacle' if src == 'monitoring'
             else 'doctor_emergency'
         )
         with get_client() as c:
-            c.post(
-                f'{STOP_MODULE_URL}/emergency-stop',
-                json={'reason': reason},
-            )
+            c.post(f'{STOP_MODULE_URL}/emergency-stop',
+                   json={'reason': reason})
         system_state['session_active'] = False
         system_state['gateway_state']  = 'emergency'
         system_state['control_state']  = ControlState.EMERGENCY_STOP
         log_event('gateway_estop', f'From {src}')
-        return {
-            'ok': True,
-            'event': {'type': 'emergency_stop', 'source': src},
-            'telemetry': aggregate_aux_telemetry(),
-        }
+        return {'ok': True,
+                'event': {'type': 'emergency_stop', 'source': src},
+                'telemetry': aggregate_aux_telemetry()}
 
     if action == 'reset_emergency':
         if src not in ('doctor_tablet', 'rehab_center', 'operator'):
-            return {
-                'ok': False, 'error': 'forbidden_source',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'forbidden_source',
+                    'telemetry': aggregate_aux_telemetry()}
         with get_client() as c:
-            resp = c.post(
-                f'{STOP_MODULE_URL}/reset-emergency',
-                json={'authorized': True},
-            )
+            resp = c.post(f'{STOP_MODULE_URL}/reset-emergency',
+                          json={'authorized': True})
         ok = resp.json().get('ok', False)
         if ok:
             system_state['gateway_state'] = 'stopped'
@@ -1336,50 +1331,34 @@ def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     if action == 'open_carriage':
         if src not in TRUSTED_SOURCES and not body.get('emergency'):
-            return {
-                'ok': False, 'error': 'untrusted_source',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'untrusted_source',
+                    'telemetry': aggregate_aux_telemetry()}
         snap           = get_stop_snapshot()
         drives_stopped = not snap.get('drives_enabled', False)
         with get_client() as c:
-            resp = c.post(
-                f'{CARRIAGE_URL}/open',
-                json={
-                    'drives_stopped': drives_stopped,
-                    'emergency': bool(body.get('emergency', False)),
-                },
-            )
+            resp = c.post(f'{CARRIAGE_URL}/open',
+                          json={'drives_stopped': drives_stopped,
+                                'emergency': bool(body.get('emergency', False))})
         log_event('carriage_open', f'Via gateway from {src}')
-        return {
-            'ok': resp.json().get('ok', False),
-            'telemetry': aggregate_aux_telemetry(),
-        }
+        return {'ok': resp.json().get('ok', False),
+                'telemetry': aggregate_aux_telemetry()}
 
     if action == 'close_carriage':
         if src not in TRUSTED_SOURCES:
-            return {
-                'ok': False, 'error': 'untrusted_source',
-                'telemetry': aggregate_aux_telemetry(),
-            }
+            return {'ok': False, 'error': 'untrusted_source',
+                    'telemetry': aggregate_aux_telemetry()}
         with get_client() as c:
             resp = c.post(f'{CARRIAGE_URL}/close')
         log_event('carriage_close', f'Via gateway from {src}')
-        return {
-            'ok': resp.json().get('ok', False),
-            'telemetry': aggregate_aux_telemetry(),
-        }
+        return {'ok': resp.json().get('ok', False),
+                'telemetry': aggregate_aux_telemetry()}
 
     if action == 'update_climate':
-        mode = apply_climate(
-            float(body['body_temp_c']), float(body['air_temp_c'])
-        )
+        mode = apply_climate(float(body['body_temp_c']),
+                             float(body['air_temp_c']))
         log_event('climate_update', f'Mode: {mode}')
-        return {
-            'ok': True,
-            'result': {'climate_mode': mode},
-            'telemetry': aggregate_aux_telemetry(),
-        }
+        return {'ok': True, 'result': {'climate_mode': mode},
+                'telemetry': aggregate_aux_telemetry()}
 
     if action == 'tactile_contact':
         snap    = get_stop_snapshot()
@@ -1389,44 +1368,49 @@ def _gateway_dispatch(action: str, body: Dict[str, Any]) -> Dict[str, Any]:
             and not snap.get('stopped', False)
         )
         with get_client() as c:
-            resp = c.post(
-                f'{TACTILE_URL}/emit',
-                json={
-                    'pattern':       'contact_sole',
-                    'intensity':     float(body.get('intensity', 0.5)),
-                    'source_trusted': trusted,
-                },
-            )
-        return {
-            'ok': True,
-            'result': {'tactile': resp.json().get('message')},
-            'telemetry': aggregate_aux_telemetry(),
-        }
+            resp = c.post(f'{TACTILE_URL}/emit',
+                          json={'pattern':       'contact_sole',
+                                'intensity':     float(body.get('intensity', 0.5)),
+                                'source_trusted': trusted})
+        return {'ok': True,
+                'result': {'tactile': resp.json().get('message')},
+                'telemetry': aggregate_aux_telemetry()}
 
     if action in ('telemetry', 'snapshot'):
-        return {
-            'ok':         True,
-            'telemetry':  aggregate_aux_telemetry(),
-            'monitoring': aggregate_monitoring_telemetry(),
-        }
+        return {'ok':         True,
+                'telemetry':  aggregate_aux_telemetry(),
+                'monitoring': aggregate_monitoring_telemetry()}
 
-    return {
-        'ok':        False,
-        'error':     f'unknown_action:{action}',
-        'telemetry': aggregate_aux_telemetry(),
-    }
+    if action == 'send_alarm':
+        # Зашифрованная отправка аларма через gateway
+        alarms = body.get('alarms', [])
+        result = send_encrypted_alarm(alarms)
+        log_event('gateway_alarm_encrypted', f'Alarms: {alarms}')
+        return {'ok': True, 'result': result,
+                'telemetry': aggregate_aux_telemetry()}
+
+    if action == 'send_telemetry':
+        # Зашифрованная отправка телеметрии через gateway
+        telemetry_data = body.get('telemetry', {})
+        result = send_encrypted_telemetry(telemetry_data)
+        log_event('gateway_telemetry_encrypted', 'Telemetry sent encrypted')
+        return {'ok': True, 'result': result,
+                'telemetry': aggregate_aux_telemetry()}
+
+    return {'ok':    False,
+            'error': f'unknown_action:{action}',
+            'telemetry': aggregate_aux_telemetry()}
 
 
 # ── Эндпоинты: Сброс ─────────────────────────────────────────────────────────
 
 @app.post('/reset')
 def reset_system():
-    logger.info("Full system reset — all 23 subsystems")
     results = {}
     for name, url in ALL_SUBSYSTEMS.items():
         try:
             with get_client() as c:
-                resp         = c.post(f'{url}/reset')
+                resp          = c.post(f'{url}/reset')
                 results[name] = {'success': resp.status_code == 200}
         except Exception as e:
             results[name] = {'success': False, 'error': str(e)}
@@ -1441,7 +1425,6 @@ def reset_system():
         'session_active':    False,
         'gateway_state':     'off',
     })
-
     log_event('system_reset', 'Full reset', body_part='all')
     return {'message': 'Full reset complete', 'results': results}
 
@@ -1461,16 +1444,6 @@ def full_telemetry():
     }
 
 
-@app.get('/telemetry/aux')
-def aux_telemetry():
-    return aggregate_aux_telemetry()
-
-
-@app.get('/telemetry/monitoring')
-def monitoring_telemetry():
-    return aggregate_monitoring_telemetry()
-
-
 # ── Эндпоинты: История ───────────────────────────────────────────────────────
 
 @app.get('/event_log')
@@ -1486,10 +1459,8 @@ def get_event_log(
             query = query.filter(SystemEventDB.event_type == event_type)
         if body_part:
             query = query.filter(SystemEventDB.body_part == body_part)
-        events = (
-            query.order_by(SystemEventDB.created_at.desc())
-            .limit(limit).all()
-        )
+        events = (query.order_by(SystemEventDB.created_at.desc())
+                  .limit(limit).all())
         return [{
             'id':          e.id,
             'event_type':  e.event_type,
@@ -1515,55 +1486,23 @@ def get_cycle_history(
         query = session.query(CycleHistoryDB)
         if body_part:
             query = query.filter(CycleHistoryDB.body_part == body_part)
-        cycles = (
-            query.order_by(CycleHistoryDB.created_at.desc())
-            .limit(limit).all()
-        )
+        cycles = (query.order_by(CycleHistoryDB.created_at.desc())
+                  .limit(limit).all())
         return [{
-            'id':             c.id,
-            'cycle_number':   c.cycle_number,
-            'body_part':      c.body_part,
-            'target':         c.target,
-            'intent':         c.intent,
-            'strength':       c.strength,
-            'speed_modifier': c.speed_modifier,
-            'can_execute':    c.can_execute,
-            'command_sent':   c.command_sent,
+            'id':              c.id,
+            'cycle_number':    c.cycle_number,
+            'body_part':       c.body_part,
+            'target':          c.target,
+            'intent':          c.intent,
+            'strength':        c.strength,
+            'speed_modifier':  c.speed_modifier,
+            'can_execute':     c.can_execute,
+            'command_sent':    c.command_sent,
             'command_success': c.command_success,
-            'error_message':  c.error_message,
-            'created_at':     c.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                              if c.created_at else None,
+            'error_message':   c.error_message,
+            'created_at':      c.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                               if c.created_at else None,
         } for c in cycles]
-    finally:
-        session.close()
-
-
-@app.get('/movement_audit')
-def get_movement_audit(
-    limit:     int           = Query(100, ge=1, le=1000),
-    body_part: Optional[str] = None,
-):
-    session = SessionLocal()
-    try:
-        query = session.query(MovementAuditDB)
-        if body_part:
-            query = query.filter(MovementAuditDB.body_part == body_part)
-        audits = (
-            query.order_by(MovementAuditDB.created_at.desc())
-            .limit(limit).all()
-        )
-        return [{
-            'id':             a.id,
-            'body_part':      a.body_part,
-            'target':         a.target,
-            'intent':         a.intent,
-            'strength':       a.strength,
-            'speed_modifier': a.speed_modifier,
-            'source_module':  a.source_module,
-            'result':         a.result,
-            'created_at':     a.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                              if a.created_at else None,
-        } for a in audits]
     finally:
         session.close()
 
@@ -1572,11 +1511,9 @@ def get_movement_audit(
 def get_gateway_history(limit: int = Query(100, ge=1, le=1000)):
     session = SessionLocal()
     try:
-        commands = (
-            session.query(GatewayCommandDB)
-            .order_by(GatewayCommandDB.created_at.desc())
-            .limit(limit).all()
-        )
+        commands = (session.query(GatewayCommandDB)
+                    .order_by(GatewayCommandDB.created_at.desc())
+                    .limit(limit).all())
         return [{
             'id':             c.id,
             'action':         c.action,
@@ -1589,116 +1526,6 @@ def get_gateway_history(limit: int = Query(100, ge=1, le=1000)):
     finally:
         session.close()
 
-
-# ── Эндпоинты: Dashboard ─────────────────────────────────────────────────────
-
-@app.get('/dashboard')
-def dashboard():
-    session = SessionLocal()
-    try:
-        total_cycles = session.query(CycleHistoryDB).count()
-        arm_cycles   = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.body_part == 'arms').count()
-        )
-        leg_cycles   = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.body_part == 'legs').count()
-        )
-        successful   = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.command_success == True).count()
-        )
-        failed       = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.command_success == False).count()
-        )
-        total_events  = session.query(SystemEventDB).count()
-        errors        = (
-            session.query(SystemEventDB)
-            .filter(SystemEventDB.success == False).count()
-        )
-        total_movements = session.query(MovementAuditDB).count()
-        gateway_cmds    = session.query(GatewayCommandDB).count()
-
-        last_arm = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.body_part == 'arms')
-            .order_by(CycleHistoryDB.created_at.desc()).first()
-        )
-        last_leg = (
-            session.query(CycleHistoryDB)
-            .filter(CycleHistoryDB.body_part == 'legs')
-            .order_by(CycleHistoryDB.created_at.desc()).first()
-        )
-
-        def cycle_info(c):
-            if not c:
-                return None
-            return {
-                'cycle':  c.cycle_number,
-                'target': c.target,
-                'intent': c.intent,
-                'success': c.command_success,
-                'time':   c.created_at.strftime('%Y-%m-%d %H:%M:%S')
-                          if c.created_at else None,
-            }
-
-        battery_info = None
-        try:
-            with get_client() as c:
-                resp = c.get(f'{BATTERY_CTRL_URL}/status')
-                if resp.status_code == 200:
-                    battery_info = resp.json()
-        except Exception:
-            pass
-
-        return {
-            'control_state':  system_state['control_state'].value,
-            'session_active': system_state['session_active'],
-            'gateway_state':  system_state['gateway_state'],
-            'statistics': {
-                'total_cycles':       total_cycles,
-                'arm_cycles':         arm_cycles,
-                'leg_cycles':         leg_cycles,
-                'successful_commands': successful,
-                'failed_commands':    failed,
-                'total_events':       total_events,
-                'error_events':       errors,
-                'total_movements':    total_movements,
-                'gateway_commands':   gateway_cmds,
-            },
-            'last_arm_cycle': cycle_info(last_arm),
-            'last_leg_cycle': cycle_info(last_leg),
-            'battery':        battery_info,
-            'subsystems': {
-                'arms': {
-                    n: system_state['subsystem_status']
-                       .get(n, {}).get('status', 'unknown')
-                    for n in ARM_SUBSYSTEMS
-                },
-                'legs': {
-                    n: system_state['subsystem_status']
-                       .get(n, {}).get('status', 'unknown')
-                    for n in LEG_SUBSYSTEMS
-                },
-                'auxiliary': {
-                    n: system_state['subsystem_status']
-                       .get(n, {}).get('status', 'unknown')
-                    for n in AUX_SUBSYSTEMS
-                },
-                'monitoring': {
-                    n: system_state['subsystem_status']
-                       .get(n, {}).get('status', 'unknown')
-                    for n in MONITORING_SUBSYSTEMS
-                },
-            },
-        }
-    finally:
-        session.close()
-
-
-# ── Запуск ────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     logger.info("Starting %s on %s:%d", MODULE_NAME, HOST, PORT)
