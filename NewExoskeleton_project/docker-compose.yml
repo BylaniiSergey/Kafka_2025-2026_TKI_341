@@ -28,10 +28,10 @@ services:
       KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
 
       # Слушаем только на IPv4
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
 
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -69,4 +69,17 @@ services:
       KAFKA_LOG_RETENTION_HOURS: 1
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
 
+    restart: unless-stopped
+
+  # ============================================================
+  # Монитор безопасности — единственная точка проверки политик
+  # ============================================================
+  security_monitor:
+    build: ./security_monitor
+    container_name: exo_security_monitor
+    depends_on:
+      - kafka
+    environment:
+      MODULE_NAME: security_monitor
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     restart: unless-stopped
