@@ -418,7 +418,3 @@ pytest tests/test_e2e_security_threats.py -v
 pytest tests/test_modules_functional.py::TestStopModule -v
 pytest tests/test_modules_functional.py::TestControlGateway::test_telemetry_contains_all_services -v
 ```
-
-## 8.3. Оговорка разработчика и условия использования
-
-Данное программное обеспечение разработано в учебных целях в рамках курсового проекта. Код может содержать ошибки; авторы не несут ответственности за любые последствия его применения. Условия распространения регулируются лицензией GPL (см. файл `LICENSE` в корне репозитория).
