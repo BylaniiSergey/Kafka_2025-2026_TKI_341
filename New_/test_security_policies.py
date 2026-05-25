@@ -47,11 +47,11 @@ _install_kafka_stub()
 
 def _load_security_module(name: str):
     """
-    Загружаем services/security_monitor/<name>.py как модуль
+    Загружаем NewExoskeleton_project/security_monitor/<name>.py как модуль
     security_monitor.<name>, чтобы относительные импорты внутри
     (например, from .policies import ...) работали.
     """
-    pkg_path = _ROOT / "services" / "security_monitor"
+    pkg_path = _ROOT / "NewExoskeleton_project" / "security_monitor"
 
     if "security_monitor" not in sys.modules:
         spec = importlib.util.spec_from_file_location(
