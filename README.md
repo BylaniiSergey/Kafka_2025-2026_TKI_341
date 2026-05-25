@@ -291,6 +291,76 @@
 | Пациент | patient |
 | Аппаратная часть экзоскелета (приводы, кабина) | exoskeleton_hw |
 
+## Политики безопасности
+
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger("security_monitor.policies")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-5s] [policies] %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+policies = (
+    {"src": "doctor",          "dst": "crypto_encrypt",   "operation": "encrypt_command"},
+    {"src": "crypto_encrypt",  "dst": "crypto_decrypt",   "operation": "transmit_cipher"},
+    {"src": "crypto_decrypt",  "dst": "command_verify",   "operation": "verify_signature"},
+    {"src": "command_verify",  "dst": "control_gateway",  "operation": "forward_command"},
+
+    {"src": "control_gateway", "dst": "patient_data",     "operation": "store_telemetry"},
+    {"src": "patient_data",    "dst": "crypto_encrypt",   "operation": "encrypt_telemetry"},
+    {"src": "crypto_encrypt",  "dst": "doctor",           "operation": "send_telemetry"},
+
+    {"src": "control_gateway", "dst": "stop",             "operation": "smooth_stop"},
+    {"src": "control_gateway", "dst": "stop",             "operation": "allow_movement"},
+    {"src": "control_gateway", "dst": "stop",             "operation": "reset_emergency"},
+    {"src": "control_gateway", "dst": "carriage",         "operation": "open"},
+    {"src": "control_gateway", "dst": "carriage",         "operation": "close"},
+    {"src": "control_gateway", "dst": "tactile",          "operation": "emit_feedback"},
+    {"src": "control_gateway", "dst": "temperature",      "operation": "request_climate"},
+
+    {"src": "patient",         "dst": "neuro_verify",     "operation": "neural_signal"},
+    {"src": "neuro_verify",    "dst": "control_gateway",  "operation": "verified_neural"},
+    {"src": "patient",         "dst": "tactile",          "operation": "tactile_input"},
+    {"src": "tactile",         "dst": "control_gateway",  "operation": "tactile_response"},
+
+    {"src": "patient",         "dst": "control_gateway",  "operation": "emergency_stop"},
+    {"src": "doctor",          "dst": "control_gateway",  "operation": "emergency_stop"},
+
+    {"src": "critical_battery","dst": "control_gateway",  "operation": "emergency_stop"},
+    {"src": "critical_detect", "dst": "control_gateway",  "operation": "emergency_stop"},
+    {"src": "sensor_verify",   "dst": "control_gateway",  "operation": "emergency_stop"},
+    {"src": "position_verify", "dst": "control_gateway",  "operation": "emergency_stop"},
+    {"src": "leg_force_control","dst": "control_gateway", "operation": "emergency_stop"},
+
+    {"src": "control_gateway", "dst": "stop",             "operation": "emergency_stop"},
+    {"src": "stop",            "dst": "carriage",         "operation": "emergency_open"},
+
+    {"src": "temperature",     "dst": "control_gateway",  "operation": "climate_decision"},
+    {"src": "control_gateway", "dst": "heating",          "operation": "set_level"},
+    {"src": "control_gateway", "dst": "heating",          "operation": "off"},
+    {"src": "control_gateway", "dst": "cooling",          "operation": "set_speed"},
+    {"src": "control_gateway", "dst": "cooling",          "operation": "off"},
+
+    {"src": "critical_sensors",      "dst": "sensor_verify",     "operation": "report_data"},
+    {"src": "critical_hand_sensors", "dst": "leg_force_control", "operation": "report_force"},
+
+    {"src": "ins_nav",         "dst": "position_verify",  "operation": "ins_data"},
+    {"src": "gnss_nav",        "dst": "position_verify",  "operation": "gnss_data"},
+    {"src": "position_verify", "dst": "control_gateway",  "operation": "zone_status"},
+
+    {"src": "control_gateway", "dst": "patient_data",     "operation": "save_state"},
+    {"src": "patient_data",    "dst": "control_gateway",  "operation": "load_state"},
+)
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
 
 # Запуск приложения и тестов
 
@@ -409,12 +479,11 @@ pytest tests/test_e2e_full.py -v
 ### Запуск тестов политик безопасности
 
 ```powershell
-pytest tests/test_e2e_security_threats.py -v
+pytest tests/test_security_policies.py -v
 ```
 
-### Запуск отдельного теста
+### Запуск функционального теста
 
 ```powershell
-pytest tests/test_modules_functional.py::TestStopModule -v
-pytest tests/test_modules_functional.py::TestControlGateway::test_telemetry_contains_all_services -v
+pytest tests/test_modules_functional -v
 ```
