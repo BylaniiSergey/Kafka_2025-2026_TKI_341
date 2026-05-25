@@ -293,6 +293,7 @@
 
 ## Политики безопасности
 
+```python
 import logging
 from datetime import datetime, timezone
 
@@ -308,6 +309,7 @@ if not logger.handlers:
     logger.propagate = False
 
 policies = (
+
     {"src": "doctor",          "dst": "crypto_encrypt",   "operation": "encrypt_command"},
     {"src": "crypto_encrypt",  "dst": "crypto_decrypt",   "operation": "transmit_cipher"},
     {"src": "crypto_decrypt",  "dst": "command_verify",   "operation": "verify_signature"},
@@ -361,6 +363,7 @@ policies = (
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+```
 
 # Запуск приложения и тестов
 
