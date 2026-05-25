@@ -295,48 +295,118 @@
 # Запуск приложения и тестов
 
 ## Запуск приложения
+Программная часть проекта реализована в виде набора из 7 микросервисов на базе фреймворка FastAPI (Python). Сервисы упакованы в Docker-контейнеры и оркестрируются с помощью docker compose. Каждый сервис внутри сети контейнеров слушает порт 8000, наружу хоста порты проброшены в диапазон 8110–8116.
 
-Подразумевается наличие развернутой по предоставленному образцу машины
-с установленным и настроенным ПО.
+### Таблица — Состав сервисов и их порты
 
-Подготовка среды разработки:
+| **Сервис** | **Назначение** | **Порт хоста** |
+| --- | --- | --- |
+| control_gateway |	Шлюз управления (точка входа) |	8110 |
+| stop | Модуль аварийной остановки |	8111 |
+| carriage	| Модуль открытия/закрытия кабины |	8112 |
+|tactile	| Модуль тактильной обратной связи |	8113 |
+| temperature	| Модуль контроля температуры |	8114 |
+| heating	Подсистема нагрева |	8115 |
+| cooling	| Подсистема охлаждения |	8116 |
 
-    make dev_install
+## Системные требования
 
-Для запуска примера:
+Операционная система: Windows 10/11, Ubuntu 22.04+ или macOS;
 
-    make all
+Docker версии не ниже 25 с поддержкой Docker Compose v2;
 
-Просмотр логов:
+Python 3.10 и выше (требуется только для прогона тестов на хосте);
 
-    make logs
+Visual Studio Code с установленными расширениями Docker, Python, REST Client.
 
-Тестирование (будет запущен e2e тест):
+## Подготовка среды разработки
 
-    make test
+В корневой папке проекта, содержащей файл docker-compose.yml, выполнить следующие команды в терминале PowerShell:
 
-Тестирование политик безопасности:
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install fastapi "uvicorn[standard]" httpx pytest
+Виртуальное окружение используется исключительно для запуска тестов на хосте. Контейнеры собираются с собственными зависимостями, описанными в файлах services/<имя>/requirements.txt.
 
-    make test_security
+## Сборка и запуск контейнеров
 
-Завершение работы:
+Запуск всех сервисов с предварительной сборкой образов:
 
-    make clean
+docker compose up --build
+Запуск в фоновом режиме (для последующего автоматизированного тестирования):
+
+docker compose up --build -d
+После запуска шлюз управления control_gateway доступен по адресу http://localhost:8110.
+
+## Проверка работоспособности
+
+Для проверки состояния системы используются эндпоинты шлюза:
+
+curl http://localhost:8110/health
+curl http://localhost:8110/telemetry
+Эндпоинт /telemetry возвращает агрегированное состояние всех 7 модулей в формате JSON.
+
+## Просмотр логов
+
+Просмотр логов всех сервисов в реальном времени:
+
+docker compose logs -f
+Просмотр логов отдельного сервиса:
+
+docker compose logs -f control_gateway
+Просмотр логов нескольких сервисов:
+
+docker compose logs -f stop carriage
+
+## Завершение работы
+
+Корректная остановка контейнеров:
+
+docker compose down
+Полная очистка с удалением томов и локальных образов:
+
+docker compose down -v --rmi local
 
 ## Запуск тестов
 
-Предполагается, что в ходе подготовки рабочего места все системные пакеты
-были установлены.
+Все тесты расположены в каталоге tests/ и реализованы с использованием библиотеки pytest. Тесты не требуют предварительного запуска контейнеров: FastAPI-приложения каждого сервиса загружаются напрямую через fastapi.testclient.TestClient, а HTTP-обращения шлюза управления к подчинённым сервисам перехватываются через пользовательский транспорт httpx.BaseTransport.
 
-Запуск примера: открыть окно терминала в Visual Studio Code, в папке
-с исходным кодом выполнить:
+## Активация окружения
 
-    make all
+.\.venv\Scripts\Activate.ps1
 
-Запуск функционального теста (e2e):
+## Запуск всех тестов
 
-    make test
+pytest tests/ -v
 
-Запуск тестов политик безопасности:
+##  Запуск функциональных тестов по модулям
 
-    make test_security
+pytest tests/test_modules_functional.py -v
+
+## Запуск сквозного (E2E) теста
+
+pytest tests/test_e2e_full.py -v
+
+##  Запуск тестов политик безопасности
+
+pytest tests/test_e2e_security_threats.py -v
+
+##  Запуск отдельного теста
+
+pytest tests/test_modules_functional.py::TestStopModule -v
+pytest tests/test_modules_functional.py::TestControlGateway::test_telemetry_contains_all_services -v
+
+##  Результаты прогона
+
+При успешном прогоне всех функциональных тестов вывод имеет следующий вид:
+========================= test session starts =========================
+collected 75 items
+tests/test_modules_functional.py::TestStopModule .............. [ 18%]
+tests/test_modules_functional.py::TestCarriageModule ......     [ 26%]
+tests/test_modules_functional.py::TestTactileModule ........    [ 40%]
+tests/test_modules_functional.py::TestTemperatureModule ......  [ 56%]
+tests/test_modules_functional.py::TestHeatingModule ......      [ 65%]
+tests/test_modules_functional.py::TestCoolingModule ......      [ 73%]
+tests/test_modules_functional.py::TestControlGateway .........  [100%]
+========================= 75 passed in 5.53s ==========================
+
