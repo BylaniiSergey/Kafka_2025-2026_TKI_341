@@ -1,0 +1,85 @@
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: exo_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 0
+      # Увеличиваем таймауты сессий
+      ZOOKEEPER_SESSION_TIMEOUT: 60000
+      ZOOKEEPER_CONNECTION_TIMEOUT: 60000
+    ports:
+      - "127.0.0.1:2181:2181"    # Только IPv4
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: exo_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "127.0.0.1:9092:9092"    # Только IPv4 — ключевое исправление
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: 60000
+      KAFKA_ZOOKEEPER_CONNECTION_TIMEOUT_MS: 60000
+
+      # Слушаем только на IPv4
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
+
+      KAFKA_INTER_BROKER_PROTOCOL_VERSION: "2.6"
+      KAFKA_LOG_MESSAGE_FORMAT_VERSION: "2.6"
+
+      # Сеть — для 90+ соединений
+      KAFKA_NUM_NETWORK_THREADS: 16
+      KAFKA_NUM_IO_THREADS: 32
+      KAFKA_QUEUED_MAX_REQUESTS: 500
+
+      # Буферы сокетов
+      KAFKA_SOCKET_SEND_BUFFER_BYTES: 1048576
+      KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: 1048576
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: 104857600
+
+      # Таймауты — увеличены для Windows
+      KAFKA_REQUEST_TIMEOUT_MS: 60000
+      KAFKA_CONNECTIONS_MAX_IDLE_MS: 900000
+      KAFKA_REPLICA_SOCKET_TIMEOUT_MS: 60000
+      KAFKA_CONTROLLER_SOCKET_TIMEOUT_MS: 60000
+
+      # Координатор групп — увеличены таймауты
+      KAFKA_GROUP_MAX_SESSION_TIMEOUT_MS: 300000
+      KAFKA_GROUP_MIN_SESSION_TIMEOUT_MS: 6000
+
+      # Producer настройки
+      KAFKA_MESSAGE_MAX_BYTES: 10485760
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
+
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+
+    restart: unless-stopped
+
+  # ============================================================
+  # Монитор безопасности — единственная точка проверки политик
+  # ============================================================
+  security_monitor:
+    build: ./security_monitor
+    container_name: exo_security_monitor
+    depends_on:
+      - kafka
+    environment:
+      MODULE_NAME: security_monitor
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: unless-stopped
