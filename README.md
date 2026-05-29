@@ -467,32 +467,14 @@ docker compose down -v --rmi local
 .\.venv\Scripts\Activate.ps1
 ```
 
-### Запуск всех тестов
+### Запуск теста на проверку безопасности
 
 ```powershell
-pytest tests/ -v
-```
-
-### Запуск функциональных тестов по модулям
-
-```powershell
-pytest tests/test_modules_functional.py -v
-```
-
-### Запуск сквозного (E2E) теста
-
-```powershell
-pytest tests/test_e2e_full.py -v
-```
-
-### Запуск тестов политик безопасности
-
-```powershell
-pytest tests/test_security_policies.py -v
+pytest tests/test_e2e_security_threats.py
 ```
 
 ### Запуск функционального теста
 
 ```powershell
-pytest tests/test_modules_functional -v
+pytest tests/test_exoskeleton_full_kafka_docker.py
 ```
