@@ -390,7 +390,7 @@ pip install fastapi "uvicorn[standard]" httpx pytest
 
 ### Сборка и запуск контейнеров
 
-Запуск всех сервисов с предварительной сборкой образов:
+Запуск предварительной сборкb образов:
 
 ```powershell
 docker compose up --build
@@ -400,6 +400,12 @@ docker compose up --build
 
 ```powershell
 docker compose up --build -d
+```
+
+Запуск всех сервисов:
+
+```powershell
+py run_all.py
 ```
 
 После запуска шлюз управления `control_gateway` доступен по адресу `http://localhost:8110`.
