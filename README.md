@@ -390,7 +390,7 @@ pip install fastapi "uvicorn[standard]" httpx pytest
 
 ### Сборка и запуск контейнеров
 
-Запуск предварительной сборкb образов:
+Запуск предварительной сборки образов:
 
 ```powershell
 docker compose up --build
